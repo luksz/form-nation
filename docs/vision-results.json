@@ -1,0 +1,143 @@
+{
+  "A_raw_bbox": {
+    "Name of Insured": {
+      "iou": 0.0,
+      "center_err": 87.9,
+      "hit": 0
+    },
+    "NRIC No": {
+      "iou": 0.0,
+      "center_err": 64.7,
+      "hit": 0
+    },
+    "Policy No": {
+      "iou": 0.0,
+      "center_err": 64.9,
+      "hit": 0
+    },
+    "Address": {
+      "iou": 0.156,
+      "center_err": 23.0,
+      "hit": 0
+    },
+    "Contact No": {
+      "iou": 0.157,
+      "center_err": 23.3,
+      "hit": 0
+    },
+    "Date of Birth": {
+      "iou": 0.215,
+      "center_err": 4.8,
+      "hit": 1
+    },
+    "Email": {
+      "iou": 0.0,
+      "center_err": 249.2,
+      "hit": 0
+    },
+    "Present occupation": {
+      "iou": 0.6,
+      "center_err": 5.7,
+      "hit": 1
+    },
+    "Name of Claimant": {
+      "iou": 0.233,
+      "center_err": 1.0,
+      "hit": 1
+    }
+  },
+  "B_grid": {
+    "Name of Insured": {
+      "iou": 0.0,
+      "center_err": 105.4,
+      "hit": 0
+    },
+    "NRIC No": {
+      "iou": 0.0,
+      "center_err": 173.1,
+      "hit": 0
+    },
+    "Policy No": {
+      "iou": 0.137,
+      "center_err": 46.9,
+      "hit": 0
+    },
+    "Address": {
+      "iou": 0.173,
+      "center_err": 99.5,
+      "hit": 0
+    },
+    "Contact No": {
+      "iou": 0.008,
+      "center_err": 56.5,
+      "hit": 0
+    },
+    "Date of Birth": {
+      "iou": 0.0,
+      "center_err": 175.4,
+      "hit": 0
+    },
+    "Email": {
+      "iou": 0.026,
+      "center_err": 151.3,
+      "hit": 0
+    },
+    "Present occupation": {
+      "iou": 0.0,
+      "center_err": 159.1,
+      "hit": 0
+    },
+    "Name of Claimant": {
+      "iou": 0.112,
+      "center_err": 100.1,
+      "hit": 1
+    }
+  },
+  "C_set_of_marks": {
+    "Name of Insured": {
+      "iou": 0.391,
+      "center_err": 36.0,
+      "hit": 1
+    },
+    "NRIC No": {
+      "iou": 0.349,
+      "center_err": 22.3,
+      "hit": 1
+    },
+    "Policy No": {
+      "iou": 0.36,
+      "center_err": 23.9,
+      "hit": 1
+    },
+    "Address": {
+      "iou": 0.505,
+      "center_err": 21.1,
+      "hit": 1
+    },
+    "Contact No": {
+      "iou": 0.842,
+      "center_err": 1.5,
+      "hit": 1
+    },
+    "Date of Birth": {
+      "iou": 0.618,
+      "center_err": 2.6,
+      "hit": 1
+    },
+    "Email": {
+      "iou": 0.0,
+      "center_err": 245.8,
+      "hit": 0
+    },
+    "Present occupation": {
+      "iou": 0.0,
+      "center_err": 245.8,
+      "hit": 0
+    },
+    "Name of Claimant": {
+      "iou": 0.325,
+      "center_err": 43.7,
+      "hit": 0
+    }
+  }
+}
