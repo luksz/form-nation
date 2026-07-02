@@ -60,6 +60,15 @@ def _subtract_label(cell: fitz.Rect, words: list) -> fitz.Rect:
     return cell
 
 
+def get_words(page: fitz.Page) -> list[tuple]:
+    """Text-layer words when available (Tier 2), OCR otherwise (Tier 3)."""
+    words = page.get_text("words")
+    if words:
+        return words
+    from app import ocr
+    return ocr.ocr_words(page)
+
+
 def detect_answer_candidates(page: fitz.Page) -> list[dict]:
     """Returns [{'id': int, 'rect': fitz.Rect, 'context': str}] in PDF points."""
     pix = page.get_pixmap(matrix=fitz.Matrix(SCALE, SCALE))
@@ -68,7 +77,7 @@ def detect_answer_candidates(page: fitz.Page) -> list[dict]:
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
     cells_px = _detect_cells(gray)
 
-    words = page.get_text("words")  # Tier 2: text layer; Tier 3 would use OCR
+    words = get_words(page)
     candidates = []
     for x0, y0, x1, y1 in cells_px:
         cell = fitz.Rect(x0 / SCALE, y0 / SCALE, x1 / SCALE, y1 / SCALE)

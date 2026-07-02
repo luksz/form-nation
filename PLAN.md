@@ -110,9 +110,13 @@ the form, colour-coded by confidence, and the human confirms before export.
   Benchmark (scripts/vision_experiment.py + vision_som.py, 9 fields vs AcroForm
   ground truth): raw LLM bboxes 3/9 correct, grid overlay 1/9, set-of-marks 6/9
   before the empty-box hint and all core fields correct after it — confirming §2.
-- **M4 — Tier 3 (scans):** swap the text layer for OCR words (PaddleOCR) in
-  `detect_answer_candidates`; add deskew/denoise preprocessing. The rest of the
-  set-of-marks pipeline is already tier-agnostic.
+- **M4 — Tier 3 (scans)** ✅ **done:** `app/ocr.py` — RapidOCR (ONNX, no system
+  deps) supplies word boxes when there's no text layer; scans are deskewed once
+  at upload (Hough-line skew estimate) and all downstream steps work on the
+  normalized copy. Validated end-to-end on a synthetic scan
+  (`samples/GEG-scan.pdf`: 1.4° skew + noise + JPEG artifacts) — all core
+  fields filled correctly. Detection results are cached per document
+  (`uploads/<id>.json`) so OCR/CV runs once, not per request.
 
 ## 5. Limitations & risks (read this before trusting it)
 

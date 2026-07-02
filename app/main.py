@@ -5,7 +5,7 @@ auto-map a profile JSON onto fields (fuzzy) -> fill and download.
 """
 
 import difflib
-import io
+import json
 import re
 import uuid
 from pathlib import Path
@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app import llm, vision
+from app import llm, ocr, vision
 
 load_dotenv()
 
@@ -82,8 +82,25 @@ def extract_candidates(doc: fitz.Document) -> list[dict]:
                 "value": "",
                 "readonly": False,
                 "context": c["context"],
+                "empty": c["empty"],
             })
     return fields
+
+
+def sidecar_path(doc_id: str) -> Path:
+    return UPLOAD_DIR / f"{doc_id}.json"
+
+
+def load_payload(doc_id: str) -> dict:
+    """Cached doc payload — CV/OCR detection is expensive, run it once."""
+    p = sidecar_path(doc_id)
+    if p.exists():
+        return json.loads(p.read_text())
+    doc = get_doc(doc_id)
+    payload = doc_payload(doc_id, doc, DOCS[doc_id].name)
+    doc.close()
+    p.write_text(json.dumps(payload))
+    return payload
 
 
 def doc_payload(doc_id: str, doc: fitz.Document, filename: str) -> dict:
@@ -111,18 +128,22 @@ async def upload(file: UploadFile):
     except Exception as e:
         path.unlink(missing_ok=True)
         raise HTTPException(400, f"Could not open PDF: {e}")
+    if detect_tier(doc) == 3:  # scans: deskew once, work on the clean copy
+        normalized = ocr.normalize_scan(doc)
+        doc.close()
+        normalized.save(path)
+        doc = fitz.open(path)
     DOCS[doc_id] = path
     result = doc_payload(doc_id, doc, file.filename)
     doc.close()
+    sidecar_path(doc_id).write_text(json.dumps(result))
     return result
 
 
 @app.get("/api/doc/{doc_id}")
 def doc_info(doc_id: str):
-    doc = get_doc(doc_id)
-    result = doc_payload(doc_id, doc, DOCS[doc_id].name)
-    doc.close()
-    return result
+    get_doc(doc_id).close()  # 404 if unknown
+    return load_payload(doc_id)
 
 
 def get_doc(doc_id: str) -> fitz.Document:
@@ -202,20 +223,27 @@ def fuzzy_map(fields: list[dict], profile: dict[str, str]) -> dict:
     return suggestions
 
 
-def automap_markers(doc: fitz.Document, profile: dict[str, str]) -> dict:
+def automap_markers(doc: fitz.Document, fields: list[dict],
+                    profile: dict[str, str]) -> dict:
     """Tier 2/3: set-of-marks per page — CV boxes, LLM picks marker ids."""
+    by_page: dict[int, list[dict]] = {}
+    for f in fields:
+        by_page.setdefault(f["page"], []).append(f)
     suggestions = {}
-    for pno in range(len(doc)):
-        candidates = vision.detect_answer_candidates(doc[pno])
-        if not candidates:
-            continue
+    for pno, page_fields in sorted(by_page.items()):
+        candidates = [
+            {"id": i + 1, "rect": fitz.Rect(f["rect"]),
+             "context": f.get("context", ""), "empty": f.get("empty", True)}
+            for i, f in enumerate(page_fields)
+        ]
         copy = fitz.open()
         copy.insert_pdf(doc, from_page=pno, to_page=pno)
         vision.draw_markers(copy[0], candidates)
         png = copy[0].get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
         copy.close()
         for m in llm.map_markers(png, candidates, profile):
-            suggestions[f"{pno}-{m['marker_id']}"] = {
+            field = page_fields[m["marker_id"] - 1]
+            suggestions[field["id"]] = {
                 "value": profile[m["profile_key"]],
                 "source_key": m["profile_key"],
                 "confidence": m["confidence"],
@@ -225,30 +253,25 @@ def automap_markers(doc: fitz.Document, profile: dict[str, str]) -> dict:
 
 @app.post("/api/automap/{doc_id}")
 def automap(doc_id: str, req: MapRequest):
-    doc = get_doc(doc_id)
-    tier = detect_tier(doc)
+    payload = load_payload(doc_id)
+    tier = payload["tier"]
+    fields = [f for f in payload["fields"] if f["type"] == "Text"]
+    if not llm.api_key():
+        return {"engine": "fuzzy (no GEMINI_API_KEY set)",
+                "suggestions": fuzzy_map(fields, req.profile)}
     try:
-        if not llm.api_key():
-            fields = (extract_fields(doc) if tier == 1
-                      else extract_candidates(doc))
-            fields = [f for f in fields if f["type"] == "Text"]
-            return {"engine": "fuzzy (no GEMINI_API_KEY set)",
-                    "suggestions": fuzzy_map(fields, req.profile)}
+        if tier == 1:
+            return {"engine": llm.GEMINI_MODEL,
+                    "suggestions": llm.map_fields(fields, req.profile)}
+        doc = get_doc(doc_id)
         try:
-            if tier == 1:
-                fields = [f for f in extract_fields(doc)
-                          if f["type"] == "Text"]
-                return {"engine": llm.GEMINI_MODEL,
-                        "suggestions": llm.map_fields(fields, req.profile)}
             return {"engine": f"{llm.GEMINI_MODEL} + set-of-marks",
-                    "suggestions": automap_markers(doc, req.profile)}
-        except Exception as e:
-            fields = (extract_fields(doc) if tier == 1
-                      else extract_candidates(doc))
-            return {"engine": f"fuzzy (LLM failed: {e})",
-                    "suggestions": fuzzy_map(fields, req.profile)}
-    finally:
-        doc.close()
+                    "suggestions": automap_markers(doc, fields, req.profile)}
+        finally:
+            doc.close()
+    except Exception as e:
+        return {"engine": f"fuzzy (LLM failed: {e})",
+                "suggestions": fuzzy_map(fields, req.profile)}
 
 
 # ---- fill & export ----
@@ -276,33 +299,32 @@ def fill_widgets(doc: fitz.Document, values: dict) -> tuple[int, list[str]]:
     return filled, skipped
 
 
-def fill_flat(doc: fitz.Document, values: dict) -> int:
+def fill_flat(doc: fitz.Document, values: dict, fields: list[dict]) -> int:
     """Tier 2/3: draw text into CV-detected answer areas."""
+    rects = {f["id"]: (f["page"], fitz.Rect(f["rect"])) for f in fields}
     filled = 0
-    for pno, page in enumerate(doc):
-        rects = {f"{pno}-{c['id']}": c["rect"]
-                 for c in vision.detect_answer_candidates(page)}
-        for key, val in values.items():
-            rect = rects.get(key)
-            if rect is None or not str(val).strip():
-                continue
-            box = fitz.Rect(rect.x0 + 2, rect.y0 + 1, rect.x1 - 2, rect.y1 - 1)
-            for size in (10, 9, 8, 7, 6):
-                if page.insert_textbox(box, str(val), fontsize=size,
+    for key, val in values.items():
+        if key not in rects or not str(val).strip():
+            continue
+        pno, rect = rects[key]
+        box = fitz.Rect(rect.x0 + 2, rect.y0 + 1, rect.x1 - 2, rect.y1 - 1)
+        for size in (10, 9, 8, 7, 6):
+            if doc[pno].insert_textbox(box, str(val), fontsize=size,
                                        fontname="helv") >= 0:
-                    filled += 1
-                    break
+                filled += 1
+                break
     return filled
 
 
 @app.post("/api/fill/{doc_id}")
 def fill(doc_id: str, req: FillRequest):
+    payload = load_payload(doc_id)
     doc = get_doc(doc_id)
     skipped: list[str] = []
-    if detect_tier(doc) == 1:
+    if payload["tier"] == 1:
         filled, skipped = fill_widgets(doc, req.values)
     else:
-        filled = fill_flat(doc, req.values)
+        filled = fill_flat(doc, req.values, payload["fields"])
     out = UPLOAD_DIR / f"{doc_id}_filled.pdf"
     doc.save(out)
     doc.close()
