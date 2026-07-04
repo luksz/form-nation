@@ -137,6 +137,12 @@ Forms often ask for the same information in several places (e.g. the
 claimant's name on page 1 and again in a later section) — map the value to
 EVERY box that asks for it, not just the first.
 
+Markers labelled CHECKBOX are tick-boxes: choose one ONLY when the profile
+clearly indicates that specific option applies (e.g. sex: male -> the
+checkbox whose label is "Male", never the "Female" one). A mapped checkbox
+will be ticked, so the profile_key's value being true/applicable is what
+matters, not writing text.
+
 For each profile value that clearly belongs in one of the marked boxes,
 return: {{"marker_id": <int>, "profile_key": <string>,
 "confidence": <0.0-1.0>}} as a JSON array. Only confident mappings; a marker
@@ -196,13 +202,40 @@ def extract_details(message: str, known: dict[str, str],
     return {"extracted": clean, "missing": [str(m) for m in missing][:8]}
 
 
+READBACK_PROMPT = """\
+This filled-in form page has red numbered markers next to certain boxes
+(the number badge sits just left of / on its box).
+
+For each marker id below, report EXACTLY the text visibly WRITTEN INSIDE
+that marker's box — the filled-in value, not the form's printed labels.
+If the box is a checkbox, report "X" if it is ticked/crossed, else "".
+If nothing is written in the box, report "".
+
+Marker ids: {ids}
+
+Return a JSON array of {{"marker_id": <int>, "text": <string>}}.
+"""
+
+
+def read_back(image_png: bytes, ids: list[int]) -> dict[int, str]:
+    """Closed-loop check: what does the filled page actually say?"""
+    result = generate(READBACK_PROMPT.format(ids=ids), image_png)
+    out = {}
+    for item in result if isinstance(result, list) else []:
+        if item.get("marker_id") in ids:
+            out[item["marker_id"]] = str(item.get("text", ""))
+    return out
+
+
 def map_markers(image_png: bytes, candidates: list[dict],
                 profile: dict[str, str]) -> list[dict]:
     """Tier 2/3: set-of-marks. The LLM only picks marker ids."""
     red = Redactor()
     listing = "\n".join(
-        f"{c['id']}: {'EMPTY' if c.get('empty') else 'has printed text'}"
-        f" — near \"{c['context']}\"" for c in candidates)
+        f"{c['id']}: "
+        + ("CHECKBOX" if c.get("kind") == "checkbox" or c.get("type") == "CheckBox"
+           else ("EMPTY" if c.get("empty") else "has printed text"))
+        + f" — near \"{c['context']}\"" for c in candidates)
     profile_lines = "\n".join(f"{k}: {red.redact(v)}"
                               for k, v in profile.items())
     mappings = generate(MARKERS_PROMPT.format(listing=listing,

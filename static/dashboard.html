@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FormNation — dashboard</title>
+<style>
+  :root {
+    --primary: #4a61c4; --primary-dark: #3b4fa3; --primary-light: #eef1fb;
+    --bg: #f5f6f8; --panel: #ffffff; --border: #dadce3; --text: #2c2e34;
+    --muted: #6d7180; --ok: #0f7b3e; --ok-light: #e2f4e9; --warn: #b54708;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--text); background: var(--bg);
+         font: 15px/1.55 "Inter", -apple-system, "Segoe UI", sans-serif; }
+  header { background: var(--panel); border-bottom: 1px solid var(--border);
+           padding: 14px 28px; display: flex; align-items: center; gap: 14px; }
+  .logo { display: flex; align-items: baseline; gap: 8px; }
+  .logo .mark { background: var(--primary); color: #fff; border-radius: 7px;
+                padding: 3px 9px; font-weight: 800; font-size: 15px; }
+  .logo .name { font-weight: 700; font-size: 17px; }
+  header nav { margin-left: auto; display: flex; gap: 16px; }
+  header nav a { color: var(--primary-dark); font-weight: 600;
+                 text-decoration: none; font-size: 14px; }
+  main { max-width: 1100px; margin: 24px auto; padding: 0 20px;
+         display: flex; flex-direction: column; gap: 18px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+           gap: 14px; }
+  .tile { background: var(--panel); border: 1px solid var(--border);
+          border-radius: 12px; padding: 16px 18px; }
+  .tile .n { font-size: 30px; font-weight: 800; color: var(--primary-dark); }
+  .tile .l { color: var(--muted); font-size: 13px; font-weight: 600; }
+  .card { background: var(--panel); border: 1px solid var(--border);
+          border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 12.5px; margin: 0 0 10px; text-transform: uppercase;
+             letter-spacing: .06em; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th { text-align: left; color: var(--muted); font-size: 12px;
+       text-transform: uppercase; letter-spacing: .04em; padding: 6px 10px;
+       border-bottom: 1px solid var(--border); }
+  td { padding: 8px 10px; border-bottom: 1px solid #eef0f4; }
+  .pill { border-radius: 999px; padding: 2px 10px; font-size: 12px;
+          font-weight: 600; }
+  .pill.filled { background: var(--ok-light); color: var(--ok); }
+  .pill.mapped { background: var(--primary-light); color: var(--primary-dark); }
+  .pill.uploaded { background: #f0f1f4; color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13.5px; padding: 8px 10px; }
+  footer { text-align: center; color: var(--muted); font-size: 12.5px;
+           padding: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><span class="mark">FN</span><span class="name">FormNation</span></div>
+  <nav>
+    <a href="/">← Fill a form</a>
+    <a href="https://t.me/formnation_fa_bot" target="_blank">🤖 Telegram bot</a>
+  </nav>
+</header>
+
+<main>
+  <div class="tiles">
+    <div class="tile"><div class="n" id="t-claims">–</div><div class="l">Claims processed</div></div>
+    <div class="tile"><div class="n" id="t-filled">–</div><div class="l">Filled &amp; delivered</div></div>
+    <div class="tile"><div class="n" id="t-clients">–</div><div class="l">Saved clients</div></div>
+    <div class="tile"><div class="n" id="t-types">–</div><div class="l">Claim types</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Recent claims</h2>
+    <table>
+      <thead><tr><th>Form</th><th>Type</th><th>Status</th><th>When</th></tr></thead>
+      <tbody id="claims"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Saved clients</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Details on file</th></tr></thead>
+      <tbody id="clients"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Registered claim types</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Template</th></tr></thead>
+      <tbody id="types"></tbody>
+    </table>
+  </div>
+</main>
+
+<footer>Claims data lives only on this machine · uploads auto-delete ·
+client records encrypted at rest</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; };
+
+async function load() {
+  const [hist, clients, types] = await Promise.all([
+    fetch('/api/history').then(r => r.json()),
+    fetch('/api/clients').then(r => r.json()),
+    fetch('/api/types').then(r => r.json()),
+  ]);
+  const forms = hist.forms || [];
+  $('t-claims').textContent = forms.length;
+  $('t-filled').textContent = forms.filter(f => f.status === 'filled').length;
+  $('t-clients').textContent = (clients.clients || []).length;
+  $('t-types').textContent = (types.types || []).length;
+
+  const tiers = {1: 'fillable', 2: 'flattened', 3: 'scan'};
+  $('claims').innerHTML = forms.map(f => `
+    <tr><td>${esc(f.filename)}</td>
+        <td>${tiers[f.tier] || '?'}</td>
+        <td><span class="pill ${esc(f.status)}">${esc(f.status)}</span></td>
+        <td>${new Date(f.created_at * 1000).toLocaleString()}</td></tr>`
+  ).join('') || '<tr><td colspan="4" class="empty">No claims yet</td></tr>';
+
+  $('clients').innerHTML = (clients.clients || []).map(c => `
+    <tr><td>👤 ${esc(c.name)}</td>
+        <td>${Object.keys(c.profile).length} details (${esc(Object.keys(c.profile).slice(0, 6).join(', '))}…)</td></tr>`
+  ).join('') || '<tr><td colspan="2" class="empty">No saved clients</td></tr>';
+
+  $('types').innerHTML = (types.types || []).map(t => `
+    <tr><td>📄 ${esc(t.name)}</td><td>${esc(t.filename || '')}</td></tr>`
+  ).join('') || '<tr><td colspan="2" class="empty">Register one via the bot: /newtype</td></tr>';
+}
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>

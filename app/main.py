@@ -94,7 +94,7 @@ def extract_candidates(doc: fitz.Document) -> list[dict]:
             fields.append({
                 "id": f"{pno}-{c['id']}",
                 "name": c["context"][:70] or f"area {c['id']} (p{pno + 1})",
-                "type": "Text",
+                "type": "CheckBox" if c.get("kind") == "checkbox" else "Text",
                 "page": pno,
                 "rect": list(c["rect"]),
                 "value": "",
@@ -253,7 +253,7 @@ def automap_markers(doc: fitz.Document, fields: list[dict],
     suggestions = {}
     for pno, page_fields in sorted(by_page.items()):
         candidates = [
-            {"id": i + 1, "rect": fitz.Rect(f["rect"]),
+            {"id": i + 1, "rect": fitz.Rect(f["rect"]), "type": f["type"],
              "context": f.get("context", ""), "empty": f.get("empty", True)}
             for i, f in enumerate(page_fields)
         ]
@@ -276,7 +276,8 @@ def automap_markers(doc: fitz.Document, fields: list[dict],
 def automap(doc_id: str, req: MapRequest):
     payload = load_payload(doc_id)
     tier = payload["tier"]
-    fields = [f for f in payload["fields"] if f["type"] == "Text"]
+    wanted = ("Text",) if tier == 1 else ("Text", "CheckBox")
+    fields = [f for f in payload["fields"] if f["type"] in wanted]
     if not llm.api_key():
         result = {"engine": "fuzzy (no GEMINI_API_KEY set)",
                   "suggestions": fuzzy_map(fields, req.profile)}
@@ -334,6 +335,17 @@ def history():
     return {"forms": db.form_history()}
 
 
+@app.get("/api/types")
+def types_list():
+    return {"types": [{"id": t["id"], "name": t["name"],
+                       "filename": t["filename"]} for t in db.list_types()]}
+
+
+@app.get("/dashboard")
+def dashboard():
+    return FileResponse(ROOT / "static" / "dashboard.html")
+
+
 class ValidateRequest(BaseModel):
     values: dict[str, object]
 
@@ -377,13 +389,24 @@ def fill_widgets(doc: fitz.Document, values: dict) -> tuple[int, list[str]]:
 
 
 def fill_flat(doc: fitz.Document, values: dict, fields: list[dict]) -> int:
-    """Tier 2/3: draw text into CV-detected answer areas."""
-    rects = {f["id"]: (f["page"], fitz.Rect(f["rect"])) for f in fields}
+    """Tier 2/3: draw text (or checkbox crosses) into CV-detected areas."""
+    info = {f["id"]: (f["page"], fitz.Rect(f["rect"]), f["type"])
+            for f in fields}
     filled = 0
     for key, val in values.items():
-        if key not in rects or not str(val).strip():
+        if key not in info:
             continue
-        pno, rect = rects[key]
+        pno, rect, ftype = info[key]
+        if ftype == "CheckBox":
+            if not val or str(val).strip().lower() in ("false", "no", "0", ""):
+                continue
+            r = fitz.Rect(rect) + (2, 2, -2, -2)
+            doc[pno].draw_line((r.x0, r.y0), (r.x1, r.y1), width=1.2)
+            doc[pno].draw_line((r.x0, r.y1), (r.x1, r.y0), width=1.2)
+            filled += 1
+            continue
+        if not str(val).strip():
+            continue
         box = fitz.Rect(rect.x0 + 2, rect.y0 + 1, rect.x1 - 2, rect.y1 - 1)
         for size in (10, 9, 8, 7, 6):
             if doc[pno].insert_textbox(box, str(val), fontsize=size,
@@ -391,6 +414,62 @@ def fill_flat(doc: fitz.Document, values: dict, fields: list[dict]) -> int:
                 filled += 1
                 break
     return filled
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", str(s)).strip().lower()
+
+
+@app.post("/api/verify/{doc_id}")
+def verify(doc_id: str, req: FillRequest):
+    """Read-back verification: fill a copy, render it, ask the vision model
+    what is actually written in each filled box, compare with intent."""
+    if not llm.api_key():
+        raise HTTPException(400, "Verification needs GEMINI_API_KEY")
+    payload = load_payload(doc_id)
+    doc = get_doc(doc_id)
+    if payload["tier"] == 1:
+        fill_widgets(doc, req.values)
+    else:
+        fill_flat(doc, req.values, payload["fields"])
+
+    fields = {str(f["id"]): f for f in payload["fields"]}
+    todo = [(fid, val) for fid, val in req.values.items()
+            if fid in fields and str(val).strip() not in ("", "False")]
+    by_page: dict[int, list] = {}
+    for fid, val in todo:
+        by_page.setdefault(fields[fid]["page"], []).append((fid, val))
+
+    checked, mismatches = 0, []
+    for pno, items in sorted(by_page.items()):
+        page = doc[pno]
+        ids = []
+        for seq, (fid, _val) in enumerate(items, start=1):
+            r = fitz.Rect(fields[fid]["rect"])
+            page.draw_rect(r, color=(0.85, 0.1, 0.1), width=0.8)
+            badge = fitz.Rect(r.x0 - 16, r.y0, r.x0 - 2, r.y0 + 10)
+            page.draw_rect(badge, color=(0.85, 0.1, 0.1),
+                           fill=(0.85, 0.1, 0.1))
+            page.insert_text((badge.x0 + 2, badge.y1 - 2), str(seq),
+                             fontsize=7, color=(1, 1, 1))
+            ids.append(seq)
+        png = page.get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+        seen = llm.read_back(png, ids)
+        for seq, (fid, val) in enumerate(items, start=1):
+            checked += 1
+            f = fields[fid]
+            expected = "x" if f["type"] == "CheckBox" else _norm(val)
+            got = _norm(seen.get(seq, ""))
+            ok = (expected == got or (expected and expected in got)
+                  or (got and got in expected))
+            if not ok:
+                mismatches.append({"field_id": fid, "name": f["name"][:60],
+                                   "expected": str(val), "seen": seen.get(seq, "")})
+    doc.close()
+    db.log_event(doc_id, "verify", {"checked": checked,
+                                    "mismatches": len(mismatches)})
+    return {"checked": checked, "matched": checked - len(mismatches),
+            "mismatches": mismatches}
 
 
 @app.post("/api/fill/{doc_id}")

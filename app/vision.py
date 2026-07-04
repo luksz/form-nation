@@ -42,6 +42,42 @@ def _detect_cells(img_gray: np.ndarray) -> list[tuple[float, float, float, float
     return cells
 
 
+def _detect_checkboxes(img_gray: np.ndarray) -> list[tuple[float, float, float, float]]:
+    """Find small empty squares (checkboxes). Returns px rects."""
+    binv = cv2.adaptiveThreshold(
+        img_gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 10)
+    contours, _ = cv2.findContours(binv, cv2.RETR_LIST,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    H, W = img_gray.shape
+    boxes = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        if not (16 <= w <= 44 and 16 <= h <= 44):
+            continue
+        if abs(w - h) > 0.25 * max(w, h):        # must be square-ish
+            continue
+        if cv2.contourArea(cnt) < 0.7 * w * h:   # solid rectangular outline
+            continue
+        inset = max(3, w // 5)
+        inner = binv[y + inset:y + h - inset, x + inset:x + w - inset]
+        if inner.size == 0 or inner.mean() > 30:  # interior must be empty
+            continue
+        # surroundings must be light — rejects glyphs in dark headers
+        pad = 4
+        outer = img_gray[max(0, y - pad):min(H, y + h + pad),
+                         max(0, x - pad):min(W, x + w + pad)]
+        if outer.mean() < 150:
+            continue
+        boxes.append((x, y, x + w, y + h))
+    # dedupe near-identical (inner+outer contour of the same square)
+    unique = []
+    for b in boxes:
+        if not any(abs(b[0] - u[0]) < 6 and abs(b[1] - u[1]) < 6
+                   for u in unique):
+            unique.append(b)
+    return unique
+
+
 def _subtract_label(cell: fitz.Rect, words: list) -> fitz.Rect:
     """Empty answer area = cell minus the printed text inside it."""
     inside = [fitz.Rect(w[:4]) for w in words
@@ -92,13 +128,26 @@ def detect_answer_candidates(page: fitz.Page) -> list[dict]:
         candidates.append({"rect": answer, "empty": is_empty,
                            "context": " ".join(w[4] for w in near)[:150]})
 
-    # dedupe near-identical rects (double contours), keep reading order
+    for x0, y0, x1, y1 in _detect_checkboxes(gray):
+        box = fitz.Rect(x0 / SCALE, y0 / SCALE, x1 / SCALE, y1 / SCALE)
+        # checkbox labels sit beside or just above the square
+        zone = fitz.Rect(box.x0 - 70, box.y0 - 16, box.x1 + 70, box.y1 + 4)
+        near = [w for w in words if fitz.Rect(w[:4]).intersects(zone)]
+        near.sort(key=lambda w: (round(w[1]), w[0]))
+        candidates.append({"rect": box, "empty": True, "kind": "checkbox",
+                           "context": " ".join(w[4] for w in near)[:100]})
+
+    # dedupe near-identical rects (double contours), keep reading order;
+    # only compare same-kind candidates — a checkbox inside a table cell
+    # is not a duplicate of that cell
     candidates.sort(key=lambda c: (round(c["rect"].y0 / 8), c["rect"].x0))
     unique = []
     for c in candidates:
         if any((c["rect"] & u["rect"]).get_area() >
                0.8 * min(c["rect"].get_area(), u["rect"].get_area())
-               for u in unique if not (c["rect"] & u["rect"]).is_empty):
+               for u in unique
+               if u.get("kind") == c.get("kind")
+               and not (c["rect"] & u["rect"]).is_empty):
             continue
         unique.append(c)
     for i, c in enumerate(unique, start=1):

@@ -315,6 +315,13 @@ async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
         f = await api.post(f"/api/fill/{doc['doc_id']}",
                            json={"values": values})
         filled_pdf = f.content
+        readback = None
+        try:  # closed-loop check: re-read the filled form
+            rb = await api.post(f"/api/verify/{doc['doc_id']}",
+                                json={"values": values})
+            readback = rb.json() if rb.status_code == 200 else None
+        except Exception:
+            pass
 
     session["values"] = values
     session["filled"] = filled_pdf
@@ -342,6 +349,12 @@ async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
     if issues:
         summary += "\n\n⚠️ Validation warnings:\n" + "\n".join(
             f"• {i['field_name'][:40]}: {i['message']}" for i in issues)
+    if readback:
+        summary += (f"\n\n🔍 Read-back check: {readback['matched']}/"
+                    f"{readback['checked']} values verified on the page")
+        for m in readback.get("mismatches", [])[:5]:
+            summary += (f"\n• {m['name'][:35]}: expected "
+                        f"\"{m['expected'][:25]}\", saw \"{m['seen'][:25]}\"")
     summary += "\n\nCheck the preview, then choose:"
 
     if previews:
