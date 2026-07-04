@@ -160,6 +160,7 @@
       <button class="secondary" id="next">▶</button>
       <label><input type="checkbox" id="showboxes" checked> field boxes</label>
       <label><input type="checkbox" id="showgrid"> grid overlay</label>
+      <button class="secondary" id="placemode">➕ Place text</button>
       <span class="spacer" style="flex:1"></span>
       <span class="meta" id="docmeta"></span>
       <span id="tierbadge"></span>
@@ -189,6 +190,13 @@
         <button class="secondary" id="download">⬇ Download filled PDF</button>
       </div>
       <div id="mapresult"></div>
+    </div>
+
+    <div class="card" id="customcard" hidden>
+      <h2>Manual placements</h2>
+      <div id="customlist"></div>
+      <p class="meta" style="margin:8px 0 0">Click "➕ Place text", then click
+      a spot on the form. Works on any form, even when detection fails.</p>
     </div>
 
     <div class="card">
@@ -229,6 +237,53 @@ let PAGE = 0;
 let VALUES = {};           // field id -> value
 let CONF = {};             // field id -> {confidence, source_key}
 let ISSUES = {};           // field id -> validation warning message
+let CUSTOM = [];           // manual placements: {page, rect, value}
+let PLACING = false;
+
+// ---- click-to-place: the universal fallback ----
+document.addEventListener('DOMContentLoaded', () => {});
+function togglePlaceMode(on) {
+  PLACING = on ?? !PLACING;
+  $('placemode').style.background = PLACING ? 'var(--primary)' : '';
+  $('placemode').style.color = PLACING ? '#fff' : '';
+  $('stage').style.cursor = PLACING ? 'crosshair' : '';
+}
+function stageClick(e) {
+  if (!PLACING || !DOC) return;
+  const r = img.getBoundingClientRect();
+  const s = DOC.pages[PAGE].width / img.clientWidth;   // css px -> PDF pt
+  const x = (e.clientX - r.left) * s, y = (e.clientY - r.top) * s;
+  CUSTOM.push({ page: PAGE, rect: [x, y - 6, x + 180, y + 8], value: '' });
+  togglePlaceMode(false);
+  renderCustomList(true);
+  drawOverlay();
+}
+function renderCustomList(focusLast) {
+  const box = $('customlist');
+  box.innerHTML = '';
+  $('customcard').hidden = CUSTOM.length === 0;
+  CUSTOM.forEach((c, i) => {
+    const row = document.createElement('div');
+    row.className = 'field-row';
+    const label = document.createElement('label');
+    label.textContent = `p${c.page + 1} @ ${Math.round(c.rect[0])},${Math.round(c.rect[1])}`;
+    row.appendChild(label);
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = 'text to write here';
+    inp.value = c.value;
+    inp.oninput = () => { c.value = inp.value; drawOverlay(); };
+    row.appendChild(inp);
+    const del = document.createElement('button');
+    del.className = 'secondary';
+    del.textContent = '✕';
+    del.style.padding = '2px 8px';
+    del.onclick = () => { CUSTOM.splice(i, 1); renderCustomList(); drawOverlay(); };
+    row.appendChild(del);
+    box.appendChild(row);
+    if (focusLast && i === CUSTOM.length - 1) inp.focus();
+  });
+}
 
 $('profile').value = JSON.stringify({
   name: "Tan Ah Kow",
@@ -311,7 +366,8 @@ if (docParam) {
 
 function loadDoc(d) {
   DOC = d;
-  VALUES = {}; CONF = {}; ISSUES = {};
+  VALUES = {}; CONF = {}; ISSUES = {}; CUSTOM = [];
+  renderCustomList();
   for (const f of DOC.fields) if (f.value) VALUES[f.id] = f.value;
   PAGE = 0;
   $('hero').hidden = true;
@@ -336,6 +392,8 @@ $('prev').onclick = () => { if (PAGE > 0) { PAGE--; showPage(); renderFieldList(
 $('next').onclick = () => { if (PAGE < DOC.pages.length - 1) { PAGE++; showPage(); renderFieldList(); } };
 $('showboxes').onchange = drawOverlay;
 $('showgrid').onchange = drawOverlay;
+$('placemode').onclick = () => togglePlaceMode();
+$('stage').addEventListener('click', stageClick);
 new ResizeObserver(drawOverlay).observe(img);
 
 function drawOverlay() {
@@ -349,6 +407,20 @@ function drawOverlay() {
   const s = w / DOC.pages[PAGE].width; // PDF points -> css px
 
   if ($('showgrid').checked) drawGrid(w, h);
+
+  // manual placements: purple dashed
+  for (const c of CUSTOM.filter(c => c.page === PAGE)) {
+    const [x0, y0, x1, y1] = c.rect.map(v => v * s);
+    ctx.setLineDash([5, 3]);
+    ctx.strokeStyle = '#8b3fc0'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.setLineDash([]);
+    if (c.value) {
+      ctx.fillStyle = '#5b2384';
+      ctx.font = `${Math.min(12, (y1 - y0) * 0.7)}px sans-serif`;
+      ctx.fillText(c.value, x0 + 3, y1 - 3, x1 - x0 - 6);
+    }
+  }
 
   if ($('showboxes').checked) {
     for (const f of DOC.fields.filter(f => f.page === PAGE)) {
@@ -473,7 +545,8 @@ $('download').onclick = async () => {
   try {
     const res = await fetch(`/api/fill/${DOC.doc_id}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ values: VALUES }),
+      body: JSON.stringify({ values: VALUES,
+                             custom: CUSTOM.filter(c => c.value.trim()) }),
     });
     if (!res.ok) { alert('fill failed'); return; }
     const blob = await res.blob();

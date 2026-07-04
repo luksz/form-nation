@@ -72,6 +72,9 @@ to THE APPLICANT (the insured person / claimant). Rules:
 2. Use each field's name AND its nearby label text to decide what it asks for.
 3. Only include mappings you are confident about. Omit uncertain fields.
 4. Values must be copied verbatim from the profile (no reformatting).
+5. Forms often ask for the same information in several places (e.g. "Name of
+   Insured" on page 1 AND "Name of Claimant" AND "Name of Patient" later).
+   Map the value to EVERY field that asks for it — do not stop at the first.
 
 PROFILE (key: value):
 {profile}
@@ -122,10 +125,14 @@ the correct box is typically the EMPTY one to its right or below.
 PROFILE (key: value):
 {profile}
 
+Forms often ask for the same information in several places (e.g. the
+claimant's name on page 1 and again in a later section) — map the value to
+EVERY box that asks for it, not just the first.
+
 For each profile value that clearly belongs in one of the marked boxes,
 return: {{"marker_id": <int>, "profile_key": <string>,
 "confidence": <0.0-1.0>}} as a JSON array. Only confident mappings; a marker
-may appear at most once.
+may appear at most once (but one profile_key may map to several markers).
 """
 
 

@@ -346,8 +346,15 @@ def validate_values(doc_id: str, req: ValidateRequest):
 
 # ---- fill & export ----
 
+class CustomPlacement(BaseModel):
+    page: int
+    rect: list[float]  # [x0, y0, x1, y1] in PDF points
+    value: str
+
+
 class FillRequest(BaseModel):
     values: dict[str, object]  # field xref (as str) -> value
+    custom: list[CustomPlacement] = []  # manual click-to-place texts
 
 
 def fill_widgets(doc: fitz.Document, values: dict) -> tuple[int, list[str]]:
@@ -395,6 +402,16 @@ def fill(doc_id: str, req: FillRequest):
         filled, skipped = fill_widgets(doc, req.values)
     else:
         filled = fill_flat(doc, req.values, payload["fields"])
+    # manual click-to-place: draw text at user-chosen spots, any tier
+    for c in req.custom:
+        if not c.value.strip() or not 0 <= c.page < len(doc):
+            continue
+        box = fitz.Rect(c.rect)
+        for size in (10, 9, 8, 7, 6):
+            if doc[c.page].insert_textbox(box, c.value, fontsize=size,
+                                          fontname="helv") >= 0:
+                filled += 1
+                break
     out = UPLOAD_DIR / f"{doc_id}_filled.pdf"
     doc.save(out)
     doc.close()
