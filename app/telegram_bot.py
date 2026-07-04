@@ -43,7 +43,19 @@ from app import db, llm
 
 load_dotenv()
 API = os.environ.get("FORM_NATION_API", "http://127.0.0.1:8477")
+PUBLIC_URL = os.environ.get("PUBLIC_URL", API)  # where humans reach the web UI
+ACCESS_TOKEN = os.environ.get("APP_ACCESS_TOKEN", "")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+
+
+def web_link(path: str) -> str:
+    """Deep link into the web UI; carries the access token once so the
+    browser gets its auth cookie."""
+    url = f"{PUBLIC_URL}{path}"
+    if ACCESS_TOKEN:
+        sep = "&" if "?" in url else "?"
+        url += f"{sep}token={ACCESS_TOKEN}"
+    return url
 
 from pathlib import Path  # noqa: E402
 
@@ -121,7 +133,9 @@ async def clients_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 def _api() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=API, timeout=300)
+    headers = ({"Authorization": f"Bearer {ACCESS_TOKEN}"}
+               if ACCESS_TOKEN else {})
+    return httpx.AsyncClient(base_url=API, timeout=300, headers=headers)
 
 
 async def _ingest(update: Update, pdf_bytes: bytes, filename: str):
@@ -365,7 +379,7 @@ async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
     ], [
         InlineKeyboardButton(
             "✏️ Fine-tune in web UI",
-            url=f"{API}/?doc={doc['doc_id']}"),
+            url=web_link(f"/?doc={doc['doc_id']}")),
     ]]
     if offer_save and profile.get("name"):
         buttons.append([InlineKeyboardButton(

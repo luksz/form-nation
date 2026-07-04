@@ -8,14 +8,19 @@ import difflib
 import json
 import os
 import re
+import secrets
 import time
 import uuid
 from pathlib import Path
 
 import fitz  # PyMuPDF
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import (
+    FastAPI, File, Form, HTTPException, Request, UploadFile,
+)
+from fastapi.responses import (
+    FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response,
+)
 from pydantic import BaseModel
 
 from app import db, llm, ocr, validate, vision
@@ -27,6 +32,75 @@ UPLOAD_DIR = ROOT / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 app = FastAPI(title="form-nation")
+
+# ---- access control (enabled by setting APP_ACCESS_TOKEN) ----
+
+ACCESS_TOKEN = os.environ.get("APP_ACCESS_TOKEN", "")
+MAX_UPLOAD_MB = float(os.environ.get("MAX_UPLOAD_MB", "20"))
+
+LOGIN_PAGE = """<!doctype html><meta charset="utf-8">
+<title>FormNation — sign in</title>
+<body style="font-family:system-ui;background:#f5f6f8;display:grid;
+place-items:center;height:100vh;margin:0">
+<form method="post" action="/login" style="background:#fff;padding:36px;
+border-radius:12px;border:1px solid #dadce3;width:320px">
+<h2 style="margin:0 0 6px">FormNation</h2>
+<p style="color:#6d7180;font-size:14px">Enter your access key</p>
+<input name="key" type="password" autofocus style="width:100%;padding:9px;
+border:1px solid #dadce3;border-radius:8px;box-sizing:border-box">
+<button style="margin-top:12px;width:100%;padding:10px;background:#4a61c4;
+color:#fff;border:0;border-radius:8px;font-weight:600">Sign in</button>
+{error}
+</form></body>"""
+
+
+def _authorized(request: Request) -> bool:
+    header = request.headers.get("authorization", "")
+    if header.startswith("Bearer ") and secrets.compare_digest(
+            header[7:], ACCESS_TOKEN):
+        return True
+    cookie = request.cookies.get("fn_auth", "")
+    return bool(cookie) and secrets.compare_digest(cookie, ACCESS_TOKEN)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if not ACCESS_TOKEN or request.url.path in ("/login", "/healthz"):
+        return await call_next(request)
+    # one-time token link (e.g. from the Telegram deep link) sets the cookie
+    qtoken = request.query_params.get("token", "")
+    if qtoken and secrets.compare_digest(qtoken, ACCESS_TOKEN):
+        response = await call_next(request)
+        response.set_cookie("fn_auth", ACCESS_TOKEN, httponly=True,
+                            samesite="lax", max_age=30 * 86400)
+        return response
+    if _authorized(request):
+        return await call_next(request)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return RedirectResponse("/login")
+
+
+@app.get("/login")
+def login_form():
+    return HTMLResponse(LOGIN_PAGE.format(error=""))
+
+
+@app.post("/login")
+def login(key: str = Form("")):
+    if ACCESS_TOKEN and secrets.compare_digest(key, ACCESS_TOKEN):
+        response = RedirectResponse("/", status_code=303)
+        response.set_cookie("fn_auth", ACCESS_TOKEN, httponly=True,
+                            samesite="lax", max_age=30 * 86400)
+        return response
+    return HTMLResponse(LOGIN_PAGE.format(
+        error='<p style="color:#c03535;font-size:13px">Wrong key</p>'),
+        status_code=401)
+
+
+@app.get("/healthz")
+def healthz():
+    return {"ok": True}
 
 # doc_id -> pdf path (prototype keeps state in memory; uploads persist on disk)
 DOCS: dict[str, Path] = {}
@@ -134,14 +208,13 @@ def doc_payload(doc_id: str, doc: fitz.Document, filename: str) -> dict:
     }
 
 
-@app.post("/api/upload")
-async def upload(file: UploadFile):
+def ingest_pdf(data: bytes, filename: str) -> dict:
     sweep_uploads()
-    if not (file.filename or "").lower().endswith(".pdf"):
-        raise HTTPException(400, "Please upload a PDF")
+    if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(413, f"File too large (max {MAX_UPLOAD_MB:.0f} MB)")
     doc_id = uuid.uuid4().hex[:12]
     path = UPLOAD_DIR / f"{doc_id}.pdf"
-    path.write_bytes(await file.read())
+    path.write_bytes(data)
     try:
         doc = fitz.open(path)
     except Exception as e:
@@ -153,12 +226,19 @@ async def upload(file: UploadFile):
         normalized.save(path)
         doc = fitz.open(path)
     DOCS[doc_id] = path
-    result = doc_payload(doc_id, doc, file.filename)
+    result = doc_payload(doc_id, doc, filename)
     doc.close()
     sidecar_path(doc_id).write_text(json.dumps(result))
-    db.record_form(doc_id, file.filename, result["tier"],
+    db.record_form(doc_id, filename, result["tier"],
                    len(result["pages"]), len(result["fields"]))
     return result
+
+
+@app.post("/api/upload")
+async def upload(file: UploadFile):
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(400, "Please upload a PDF")
+    return ingest_pdf(await file.read(), file.filename)
 
 
 @app.get("/api/doc/{doc_id}")
