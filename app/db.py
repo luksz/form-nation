@@ -12,7 +12,32 @@ import sqlite3
 import time
 from pathlib import Path
 
-DB_PATH = Path(__file__).resolve().parent.parent / "data" / "form-nation.db"
+from cryptography.fernet import Fernet, InvalidToken
+
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+DB_PATH = DATA_DIR / "form-nation.db"
+KEY_PATH = DATA_DIR / ".secret.key"
+
+
+def _fernet() -> Fernet:
+    DATA_DIR.mkdir(exist_ok=True)
+    if not KEY_PATH.exists():
+        KEY_PATH.write_bytes(Fernet.generate_key())
+        KEY_PATH.chmod(0o600)
+    return Fernet(KEY_PATH.read_bytes())
+
+
+def _encrypt(profile: dict) -> str:
+    return _fernet().encrypt(json.dumps(profile).encode()).decode()
+
+
+def _decrypt(blob: str) -> dict:
+    if blob.startswith("{"):        # legacy plaintext row
+        return json.loads(blob)
+    try:
+        return json.loads(_fernet().decrypt(blob.encode()))
+    except InvalidToken:
+        return {}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clients (
@@ -64,7 +89,7 @@ def list_clients() -> list[dict]:
         rows = c.execute(
             "SELECT id, name, profile_json FROM clients ORDER BY name").fetchall()
     return [{"id": r["id"], "name": r["name"],
-             "profile": json.loads(r["profile_json"])} for r in rows]
+             "profile": _decrypt(r["profile_json"])} for r in rows]
 
 
 def get_client(client_id: int) -> dict | None:
@@ -74,7 +99,7 @@ def get_client(client_id: int) -> dict | None:
     if r is None:
         return None
     return {"id": r["id"], "name": r["name"],
-            "profile": json.loads(r["profile_json"])}
+            "profile": _decrypt(r["profile_json"])}
 
 
 def save_client(name: str, profile: dict) -> int:
@@ -85,7 +110,7 @@ def save_client(name: str, profile: dict) -> int:
             " VALUES (?, ?, ?, ?)"
             " ON CONFLICT(name) DO UPDATE SET profile_json=excluded.profile_json,"
             " updated_at=excluded.updated_at",
-            (name.strip(), json.dumps(profile), now, now))
+            (name.strip(), _encrypt(profile), now, now))
         row = c.execute("SELECT id FROM clients WHERE name=?",
                         (name.strip(),)).fetchone()
     return row["id"]

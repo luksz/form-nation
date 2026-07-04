@@ -20,6 +20,7 @@ understood, and keep RETENTION_HOURS short.
 Run:  .venv/bin/python -m app.telegram_bot   (needs TELEGRAM_BOT_TOKEN in .env)
 """
 
+import asyncio
 import io
 import logging
 import os
@@ -78,6 +79,19 @@ HELP = (
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 form-nation bot.\n\n" + HELP)
+
+
+async def delclient_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    clients = db.list_clients()
+    if not clients:
+        await update.message.reply_text("No saved clients.")
+        return
+    rows = [[InlineKeyboardButton(f"🗑 {c['name']}",
+                                  callback_data=f"delclient:{c['id']}")]
+            for c in clients[:12]]
+    await update.message.reply_text(
+        "Tap a client to permanently delete their saved record:",
+        reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -374,6 +388,14 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                            Path(ctype["path"]).read_bytes(),
                            ctype["filename"] or f"{ctype['name']}.pdf")
         return
+    if query.data.startswith("delclient:"):
+        client = db.get_client(int(query.data.split(":", 1)[1]))
+        if client and db.delete_client(client["id"]):
+            await query.edit_message_text(
+                f"🗑 Deleted \"{client['name']}\" permanently.")
+        else:
+            await query.edit_message_text("Already deleted.")
+        return
     if query.data.startswith("client:"):
         client = db.get_client(int(query.data.split(":", 1)[1]))
         if client is None:
@@ -422,10 +444,23 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         form = re.sub(r"[^\w]+", "-",
                       session["doc"]["filename"].rsplit(".", 1)[0])[:40]
         outname = f"{who}_{form}_{datetime.now():%Y-%m-%d}.pdf"
-        await query.message.reply_document(
+        ttl_min = float(os.environ.get("DELETE_DELIVERED_MINUTES", "60"))
+        if ttl_min > 0:
+            caption += (f"\n⏳ This file auto-deletes from the chat in "
+                        f"{ttl_min:.0f} min — save it now.")
+        sent = await query.message.reply_document(
             document=io.BytesIO(session["filled"]),
             filename=outname,
             caption=caption)
+        if ttl_min > 0:  # remove the filled PDF from Telegram's servers
+            async def _expire(bot=ctx.bot, cid=chat_id,
+                              mid=sent.message_id, delay=ttl_min * 60):
+                await asyncio.sleep(delay)
+                try:
+                    await bot.delete_message(cid, mid)
+                except Exception:
+                    pass
+            asyncio.create_task(_expire())
         await query.edit_message_text(query.message.text + "\n\n✅ Delivered.")
         SESSIONS.pop(chat_id, None)
     elif query.data == "discard":
@@ -462,6 +497,7 @@ def main():
     app.add_handler(CommandHandler("newtype", newtype_cmd))
     app.add_handler(CommandHandler(["newclaim", "types"], newclaim_cmd))
     app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("delclient", delclient_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,

@@ -179,6 +179,7 @@
       </select>
       <div class="row">
         <button class="secondary" id="saveclient">💾 Save current as client</button>
+        <button class="secondary" id="delclient" style="flex:0 0 auto">🗑</button>
       </div>
     </div>
 
@@ -315,10 +316,19 @@ async function loadClients() {
   for (const c of clients) {
     const opt = document.createElement('option');
     opt.value = JSON.stringify(c.profile);
+    opt.dataset.id = c.id;
     opt.textContent = `👤 ${c.name}`;
     sel.appendChild(opt);
   }
 }
+$('delclient').onclick = async () => {
+  const sel = $('clientsel');
+  const opt = sel.selectedOptions[0];
+  if (!opt || !opt.dataset.id) { alert('Select a saved client first'); return; }
+  if (!confirm(`Permanently delete ${opt.textContent.replace('👤 ', '')}'s saved record?`)) return;
+  await fetch(`/api/clients/${opt.dataset.id}`, { method: 'DELETE' });
+  await loadClients();
+};
 $('clientsel').onchange = e => {
   if (!e.target.value) return;
   $('profile').value = JSON.stringify(JSON.parse(e.target.value), null, 2);

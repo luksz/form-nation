@@ -12,6 +12,8 @@ import time
 
 import httpx
 
+from app.redact import Redactor
+
 GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -88,11 +90,17 @@ Return a JSON array of objects: {{"field_id": <int>, "profile_key": <string>,
 
 
 def map_fields(fields: list[dict], profile: dict[str, str]) -> dict:
-    """Tier 1: fields are AcroForm widgets with real ids."""
+    """Tier 1: fields are AcroForm widgets with real ids.
+
+    Profile values are redacted before sending — the model only returns
+    profile KEYS, and real values are substituted locally afterwards.
+    """
+    red = Redactor()
     field_lines = "\n".join(
         f"{f['id']} | {f['name']} | {f.get('context', '')}" for f in fields
     )
-    profile_lines = "\n".join(f"{k}: {v}" for k, v in profile.items())
+    profile_lines = "\n".join(f"{k}: {red.redact(v)}"
+                              for k, v in profile.items())
     mappings = generate(FIELDS_PROMPT.format(profile=profile_lines,
                                              fields=field_lines))
     valid_ids = {f["id"] for f in fields}
@@ -169,25 +177,34 @@ human-readable labels, prioritising what the form needs>]}}
 
 def extract_details(message: str, known: dict[str, str],
                     form_fields: list[str] | None) -> dict:
-    """Free-text intake: extract new facts + list what's still missing."""
-    known_lines = "\n".join(f"{k}: {v}" for k, v in known.items()) or "(none)"
+    """Free-text intake: extract new facts + list what's still missing.
+
+    NRIC/email/phone/account numbers are redacted to placeholders before
+    the LLM sees the message, and restored locally in the extracted values.
+    """
+    red = Redactor()
+    message = red.redact(message)
+    known_lines = "\n".join(f"{k}: {red.redact(v)}"
+                            for k, v in known.items()) or "(none)"
     fields = "\n".join(form_fields or []) or "(no form uploaded yet)"
     result = generate(EXTRACT_PROMPT.format(
         known=known_lines, form_fields=fields, message=message))
     extracted = result.get("extracted", {}) if isinstance(result, dict) else {}
     missing = result.get("missing", []) if isinstance(result, dict) else []
-    clean = {str(k).strip(): str(v).strip() for k, v in extracted.items()
-             if str(v).strip()}
+    clean = {str(k).strip(): red.restore(str(v).strip())
+             for k, v in extracted.items() if str(v).strip()}
     return {"extracted": clean, "missing": [str(m) for m in missing][:8]}
 
 
 def map_markers(image_png: bytes, candidates: list[dict],
                 profile: dict[str, str]) -> list[dict]:
     """Tier 2/3: set-of-marks. The LLM only picks marker ids."""
+    red = Redactor()
     listing = "\n".join(
         f"{c['id']}: {'EMPTY' if c.get('empty') else 'has printed text'}"
         f" — near \"{c['context']}\"" for c in candidates)
-    profile_lines = "\n".join(f"{k}: {v}" for k, v in profile.items())
+    profile_lines = "\n".join(f"{k}: {red.redact(v)}"
+                              for k, v in profile.items())
     mappings = generate(MARKERS_PROMPT.format(listing=listing,
                                               profile=profile_lines),
                         image_png)
