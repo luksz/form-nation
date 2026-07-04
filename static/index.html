@@ -552,7 +552,7 @@ $('download').onclick = async () => {
     const blob = await res.blob();
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = 'filled.pdf';
+    a.download = 'filled-' + (DOC.filename || 'form.pdf');
     a.click();
     URL.revokeObjectURL(a.href);
     setStep(3);

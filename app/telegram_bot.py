@@ -23,6 +23,8 @@ Run:  .venv/bin/python -m app.telegram_bot   (needs TELEGRAM_BOT_TOKEN in .env)
 import io
 import logging
 import os
+import re
+from datetime import datetime
 
 import fitz
 import httpx
@@ -30,6 +32,7 @@ from dotenv import load_dotenv
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update,
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application, CallbackQueryHandler, CommandHandler, ContextTypes,
     MessageHandler, filters,
@@ -73,6 +76,19 @@ HELP = (
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 form-nation bot.\n\n" + HELP)
+
+
+async def history_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    forms = db.form_history(10)
+    if not forms:
+        await update.message.reply_text("No claims processed yet.")
+        return
+    status_icon = {"uploaded": "📄", "mapped": "🤖", "filled": "✅"}
+    lines = [
+        f"{status_icon.get(f['status'], '•')} {f['filename']} — "
+        f"{f['status']} ({datetime.fromtimestamp(f['created_at']):%d %b %H:%M})"
+        for f in forms]
+    await update.message.reply_text("Recent claims:\n" + "\n".join(lines))
 
 
 async def clients_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -222,6 +238,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     form_fields = ([f["name"] for f in doc["fields"]
                     if f["type"] != "Signature"] if doc else None)
 
+    await ctx.bot.send_chat_action(chat_id, ChatAction.TYPING)
     thinking = await update.message.reply_text("🤔 Reading that…")
     try:
         result = llm.extract_details(update.message.text,
@@ -267,6 +284,7 @@ async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
                       profile: dict[str, str], offer_save: bool = False):
     session = SESSIONS.get(chat_id)
     doc = session["doc"]
+    await ctx.bot.send_chat_action(chat_id, ChatAction.UPLOAD_DOCUMENT)
     msg = await ctx.bot.send_message(chat_id,
                                      "🤖 Mapping details onto the form…")
     async with _api() as api:
@@ -398,9 +416,13 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if profile.get("name"):  # auto-create/update the client record
             db.save_client(profile["name"], profile)
             caption += f"\n👤 Client record for {profile['name']} updated."
+        who = re.sub(r"[^\w]+", "-", profile.get("name", "client")).strip("-")
+        form = re.sub(r"[^\w]+", "-",
+                      session["doc"]["filename"].rsplit(".", 1)[0])[:40]
+        outname = f"{who}_{form}_{datetime.now():%Y-%m-%d}.pdf"
         await query.message.reply_document(
             document=io.BytesIO(session["filled"]),
-            filename="filled-" + session["doc"]["filename"],
+            filename=outname,
             caption=caption)
         await query.edit_message_text(query.message.text + "\n\n✅ Delivered.")
         SESSIONS.pop(chat_id, None)
@@ -437,6 +459,7 @@ def main():
     app.add_handler(CommandHandler("clients", clients_cmd))
     app.add_handler(CommandHandler("newtype", newtype_cmd))
     app.add_handler(CommandHandler(["newclaim", "types"], newclaim_cmd))
+    app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,
