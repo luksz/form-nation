@@ -51,6 +51,8 @@ TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("form-nation-bot")
+# httpx logs full request URLs at INFO — which include the bot token
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # chat_id -> session; one active form per chat, forgotten on completion
 SESSIONS: dict[int, dict] = {}
