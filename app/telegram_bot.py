@@ -35,6 +35,8 @@ from telegram.ext import (
     MessageHandler, filters,
 )
 
+from app import db
+
 load_dotenv()
 API = os.environ.get("FORM_NATION_API", "http://127.0.0.1:8477")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -55,6 +57,19 @@ HELP = (
 
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 form-nation bot.\n\n" + HELP)
+
+
+async def clients_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    clients = db.list_clients()
+    if not clients:
+        await update.message.reply_text(
+            "No saved clients yet. After you paste a client's details for a "
+            "form, tap 💾 Save to keep them for reuse.")
+        return
+    lines = [f"• {c['name']} ({len(c['profile'])} details)" for c in clients]
+    await update.message.reply_text(
+        "Saved clients:\n" + "\n".join(lines) +
+        "\n\nThey appear as buttons whenever you send a form.")
 
 
 def _api() -> httpx.AsyncClient:
@@ -78,19 +93,25 @@ async def _ingest(update: Update, pdf_bytes: bytes, filename: str):
     tiers = {1: "fillable PDF — exact fields",
              2: "flattened PDF — detected areas",
              3: "scan/photo — OCR + detected areas"}
-    await msg.edit_text(
+    text = (
         f"✅ Form received: {doc['filename']}\n"
         f"• {len(doc['pages'])} page(s), {len(doc['fields'])} field(s)\n"
         f"• Type: {tiers.get(doc['tier'], '?')}\n\n"
-        "Now send the client's details, one per line, like:\n\n"
+        "Pick a saved client below, or send the client's details, "
+        "one per line, like:\n\n"
         "name: Tan Ah Kow\n"
         "nric: S1234567D\n"
         "policy_no: PA-0012345\n"
-        "address: Blk 123 Bedok North Ave 1\n"
-        "phone: 91234567\n"
-        "email: ahkow@example.com\n"
-        "date_of_birth: 01/02/1980"
+        "phone: 91234567"
     )
+    clients = db.list_clients()
+    keyboard = None
+    if clients:
+        rows = [[InlineKeyboardButton(f"👤 {c['name']}",
+                                      callback_data=f"client:{c['id']}")]
+                for c in clients[:8]]
+        keyboard = InlineKeyboardMarkup(rows)
+    await msg.edit_text(text, reply_markup=keyboard)
 
 
 async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -145,10 +166,15 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "I couldn't read any details. Use one `key: value` per line.")
         return
+    await run_mapping(chat_id, ctx, profile, offer_save=True)
 
+
+async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
+                      profile: dict[str, str], offer_save: bool = False):
+    session = SESSIONS.get(chat_id)
     doc = session["doc"]
-    msg = await update.message.reply_text(
-        "🤖 Mapping details onto the form…")
+    msg = await ctx.bot.send_message(chat_id,
+                                     "🤖 Mapping details onto the form…")
     async with _api() as api:
         r = await api.post(f"/api/automap/{doc['doc_id']}",
                            json={"profile": profile})
@@ -191,16 +217,20 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     summary += "\n\nCheck the preview, then choose:"
 
     if previews:
-        await update.message.reply_media_group(previews)
-    keyboard = InlineKeyboardMarkup([[
+        await ctx.bot.send_media_group(chat_id, previews)
+    buttons = [[
         InlineKeyboardButton("✅ Approve & get PDF", callback_data="approve"),
         InlineKeyboardButton("❌ Discard", callback_data="discard"),
     ], [
         InlineKeyboardButton(
             "✏️ Fine-tune in web UI",
             url=f"{API}/?doc={doc['doc_id']}"),
-    ]])
-    await msg.edit_text(summary, reply_markup=keyboard)
+    ]]
+    if offer_save and profile.get("name"):
+        buttons.append([InlineKeyboardButton(
+            f"💾 Save \"{profile['name']}\" for reuse",
+            callback_data="save_client")])
+    await msg.edit_text(summary, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 def s_field_page(doc: dict, fid: str) -> int:
@@ -217,6 +247,21 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     session = SESSIONS.get(chat_id)
     if not session:
         await query.edit_message_text("Session expired — send the form again.")
+        return
+    if query.data.startswith("client:"):
+        client = db.get_client(int(query.data.split(":", 1)[1]))
+        if client is None:
+            await query.message.reply_text("That client was deleted.")
+            return
+        await run_mapping(chat_id, ctx, client["profile"])
+        return
+    if query.data == "save_client":
+        profile = session.get("profile") or {}
+        if profile.get("name"):
+            db.save_client(profile["name"], profile)
+            await query.message.reply_text(
+                f"💾 Saved \"{profile['name']}\" — next time they'll appear "
+                "as a button when you send a form.")
         return
     if query.data == "approve":
         await query.message.reply_document(
@@ -238,6 +283,7 @@ def main():
             "Telegram, then add TELEGRAM_BOT_TOKEN=... to .env")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler(["start", "help"], start))
+    app.add_handler(CommandHandler("clients", clients_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,

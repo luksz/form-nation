@@ -3,84 +3,166 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>form-nation</title>
+<title>FormNation — form filling for financial advisers</title>
 <style>
   :root {
-    --bg: #f6f7f9; --panel: #ffffff; --border: #e2e5ea; --text: #1f2430;
-    --muted: #6b7280; --accent: #2563eb; --ok: #16a34a; --warn: #d97706;
+    --primary: #4a61c4; --primary-dark: #3b4fa3; --primary-light: #eef1fb;
+    --bg: #f5f6f8; --panel: #ffffff; --border: #dadce3; --text: #2c2e34;
+    --muted: #6d7180; --ok: #0f7b3e; --ok-light: #e2f4e9;
+    --warn: #b54708; --warn-light: #fdf1e2; --danger: #c03535;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.45 -apple-system, "Segoe UI", sans-serif;
-         background: var(--bg); color: var(--text); }
-  header { padding: 12px 20px; background: var(--panel);
-           border-bottom: 1px solid var(--border); display: flex;
-           align-items: center; gap: 16px; flex-wrap: wrap; }
-  header h1 { font-size: 16px; margin: 0; }
-  header .meta { color: var(--muted); }
-  main { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
-  #viewer { flex: 1; min-width: 0; background: var(--panel);
-            border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
-  #stage { position: relative; overflow: auto; max-height: calc(100vh - 170px); }
-  #pageimg { display: block; width: 100%; height: auto; }
-  #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
-  #sidebar { width: 380px; flex-shrink: 0; display: flex; flex-direction: column;
-             gap: 12px; max-height: calc(100vh - 110px); overflow: auto; }
-  .card { background: var(--panel); border: 1px solid var(--border);
-          border-radius: 8px; padding: 12px; }
-  .card h2 { font-size: 13px; margin: 0 0 8px; text-transform: uppercase;
-             letter-spacing: .04em; color: var(--muted); }
-  button { background: var(--accent); color: #fff; border: 0; border-radius: 6px;
-           padding: 7px 14px; cursor: pointer; font-size: 13px; }
-  button.secondary { background: #eef1f5; color: var(--text); }
-  button:disabled { opacity: .5; cursor: default; }
-  input[type=text], textarea { width: 100%; border: 1px solid var(--border);
-           border-radius: 6px; padding: 6px 8px; font: inherit; }
-  textarea { font-family: ui-monospace, monospace; font-size: 12px; }
-  .field-row { display: flex; align-items: center; gap: 8px; padding: 5px 6px;
-               border-radius: 6px; }
-  .field-row:hover, .field-row.hl { background: #eef4ff; }
-  .field-row label { flex: 1; min-width: 0; overflow: hidden;
-               text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
-  .field-row input[type=text] { flex: 1.2; }
-  .conf { font-size: 11px; border-radius: 10px; padding: 1px 7px; color: #fff; }
-  .sig { color: var(--warn); font-size: 12px; }
-  .pagebtns { display: flex; gap: 6px; align-items: center; margin-bottom: 8px;
-              flex-wrap: wrap; }
-  .tier { background: #dcfce7; color: #166534; border-radius: 10px;
-          padding: 2px 10px; font-size: 12px; }
-  #drop { border: 2px dashed var(--border); border-radius: 10px; padding: 60px;
-          text-align: center; color: var(--muted); margin: 40px auto;
-          max-width: 520px; background: var(--panel); cursor: pointer; }
-  #drop.over { border-color: var(--accent); color: var(--accent); }
-  #busy { display: none; align-items: center; gap: 8px; color: var(--accent);
-          font-weight: 600; }
+  html, body { height: 100%; }
+  body { margin: 0; color: var(--text); background: var(--bg);
+         font: 15px/1.55 "Inter", -apple-system, "Segoe UI", sans-serif;
+         display: flex; flex-direction: column; }
+
+  /* ---------- header ---------- */
+  header { background: var(--panel); border-bottom: 1px solid var(--border);
+           padding: 14px 28px; display: flex; align-items: center; gap: 14px; }
+  .logo { display: flex; align-items: baseline; gap: 8px; }
+  .logo .mark { background: var(--primary); color: #fff; border-radius: 7px;
+                padding: 3px 9px; font-weight: 800; font-size: 15px; }
+  .logo .name { font-weight: 700; font-size: 17px; letter-spacing: -.01em; }
+  .logo .sub { color: var(--muted); font-size: 13px; }
+  header .spacer { flex: 1; }
+  .trust { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .trust span { background: var(--primary-light); color: var(--primary-dark);
+                border-radius: 999px; padding: 4px 12px; font-size: 12.5px;
+                font-weight: 600; }
+  #busy { display: none; align-items: center; gap: 8px; color: var(--primary);
+          font-weight: 600; font-size: 13.5px; }
   #busy.on { display: inline-flex; }
   #busy::before { content: ""; width: 14px; height: 14px; border-radius: 50%;
-          border: 2px solid var(--accent); border-top-color: transparent;
+          border: 2px solid var(--primary); border-top-color: transparent;
           animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- stepper ---------- */
+  .stepper { display: flex; justify-content: center; gap: 0; padding: 22px 16px 6px; }
+  .step { display: flex; align-items: center; gap: 10px; color: var(--muted);
+          font-size: 14px; font-weight: 600; }
+  .step .n { width: 28px; height: 28px; border-radius: 50%; display: grid;
+             place-items: center; background: #e4e6ec; color: var(--muted);
+             font-size: 13px; font-weight: 700; }
+  .step.active { color: var(--primary-dark); }
+  .step.active .n { background: var(--primary); color: #fff; }
+  .step.done .n { background: var(--ok); color: #fff; }
+  .step + .step::before { content: ""; width: 70px; height: 2px;
+             background: var(--border); margin: 0 14px; }
+
+  /* ---------- upload hero ---------- */
+  #hero { max-width: 640px; margin: 28px auto; padding: 0 16px; width: 100%; }
+  #drop { background: var(--panel); border: 1.5px dashed #b9bfd0;
+          border-radius: 14px; padding: 56px 32px; text-align: center;
+          cursor: pointer; transition: border-color .15s, background .15s; }
+  #drop:hover, #drop.over { border-color: var(--primary); background: var(--primary-light); }
+  #drop h2 { margin: 0 0 6px; font-size: 19px; }
+  #drop p { margin: 4px 0; color: var(--muted); font-size: 13.5px; }
+  #drop .cta { display: inline-block; margin-top: 14px; background: var(--primary);
+          color: #fff; border-radius: 8px; padding: 9px 22px; font-weight: 600; }
+  .privacy-note { text-align: center; color: var(--muted); font-size: 12.5px;
+          margin-top: 14px; }
+
+  /* ---------- workspace ---------- */
+  main { display: flex; gap: 18px; padding: 14px 24px 24px; align-items: flex-start;
+         flex: 1; }
+  main[hidden] { display: none; }
+  .card { background: var(--panel); border: 1px solid var(--border);
+          border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 12.5px; margin: 0 0 10px; text-transform: uppercase;
+             letter-spacing: .06em; color: var(--muted); font-weight: 700; }
+  #viewer { flex: 1; min-width: 0; }
+  #stage { position: relative; overflow: auto; max-height: calc(100vh - 250px);
+           border: 1px solid var(--border); border-radius: 8px; }
+  #pageimg { display: block; width: 100%; height: auto; }
+  #overlay { position: absolute; left: 0; top: 0; pointer-events: none; }
+  #sidebar { width: 400px; flex-shrink: 0; display: flex; flex-direction: column;
+             gap: 14px; max-height: calc(100vh - 180px); overflow: auto; }
+
+  button { background: var(--primary); color: #fff; border: 0; border-radius: 8px;
+           padding: 9px 16px; cursor: pointer; font: inherit; font-size: 14px;
+           font-weight: 600; }
+  button:hover { background: var(--primary-dark); }
+  button.secondary { background: #fff; color: var(--text);
+           border: 1px solid var(--border); }
+  button.secondary:hover { background: var(--bg); }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=text], textarea, select { width: 100%; border: 1px solid var(--border);
+           border-radius: 8px; padding: 8px 10px; font: inherit; background: #fff; }
+  textarea { font-family: ui-monospace, monospace; font-size: 12.5px; }
+
+  .pagebtns { display: flex; gap: 8px; align-items: center; margin-bottom: 10px;
+              flex-wrap: wrap; font-size: 13.5px; }
+  .tier { background: var(--ok-light); color: var(--ok); border-radius: 999px;
+          padding: 3px 12px; font-size: 12.5px; font-weight: 600; }
+  .meta { color: var(--muted); font-size: 13.5px; }
+
+  .field-row { display: flex; align-items: center; gap: 8px; padding: 6px;
+               border-radius: 8px; }
+  .field-row:hover, .field-row.hl { background: var(--primary-light); }
+  .field-row label { flex: 1; min-width: 0; overflow: hidden; font-size: 13px;
+               text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  .field-row input[type=text] { flex: 1.2; padding: 5px 8px; font-size: 13px; }
+  .conf { font-size: 11px; border-radius: 999px; padding: 2px 8px; color: #fff;
+          font-weight: 700; }
+  .sig { color: var(--warn); font-size: 12px; }
+  #mapresult { margin-top: 10px; font-size: 13px; color: var(--muted);
+               white-space: pre-line; }
+  .row { display: flex; gap: 8px; margin-top: 10px; }
+  .row > * { flex: 1; }
+
+  footer { border-top: 1px solid var(--border); background: var(--panel);
+           padding: 14px 28px; color: var(--muted); font-size: 12.5px;
+           text-align: center; }
 </style>
 </head>
 <body>
 <header>
-  <h1>form-nation</h1>
-  <span class="meta" id="docmeta">no document loaded</span>
-  <span id="tierbadge"></span>
+  <div class="logo">
+    <span class="mark">FN</span>
+    <span class="name">FormNation</span>
+    <span class="sub">form filling for financial advisers</span>
+  </div>
+  <div class="spacer"></div>
   <span id="busy"></span>
+  <div class="trust">
+    <span>🔒 Processed on your machine</span>
+    <span>🗑 Auto-deleted after 24 h</span>
+    <span>✍️ Signatures never auto-filled</span>
+  </div>
 </header>
 
-<div id="drop">Drop a PDF form here or click to choose<br>
-  <input type="file" id="fileinput" accept="application/pdf" hidden>
+<div class="stepper">
+  <div class="step active" id="step1"><span class="n">1</span> Upload form</div>
+  <div class="step" id="step2"><span class="n">2</span> Review &amp; edit</div>
+  <div class="step" id="step3"><span class="n">3</span> Download</div>
+</div>
+
+<div id="hero">
+  <div id="drop">
+    <h2>Upload a claim form</h2>
+    <p>Fillable PDF, flattened PDF, or a scan — we detect which automatically.</p>
+    <span class="cta">Choose file</span>
+    <p style="margin-top:12px">or drag &amp; drop it here</p>
+    <input type="file" id="fileinput" accept="application/pdf" hidden>
+  </div>
+  <p class="privacy-note">Files are analysed locally. Only the field-mapping step
+  contacts an AI service, and every suggested value is shown to you for review
+  before anything is filled.</p>
 </div>
 
 <main id="workspace" hidden>
-  <div id="viewer">
+  <div id="viewer" class="card">
     <div class="pagebtns">
       <button class="secondary" id="prev">◀</button>
       <span id="pageinfo"></span>
       <button class="secondary" id="next">▶</button>
       <label><input type="checkbox" id="showboxes" checked> field boxes</label>
       <label><input type="checkbox" id="showgrid"> grid overlay</label>
+      <span class="spacer" style="flex:1"></span>
+      <span class="meta" id="docmeta"></span>
+      <span id="tierbadge"></span>
     </div>
     <div id="stage">
       <img id="pageimg" alt="form page">
@@ -90,20 +172,37 @@
 
   <div id="sidebar">
     <div class="card">
-      <h2>Auto-fill from profile</h2>
-      <textarea id="profile" rows="7"></textarea>
-      <div style="margin-top:8px; display:flex; gap:8px;">
-        <button id="automap">Auto-fill</button>
-        <button id="download" class="secondary">Download filled PDF</button>
+      <h2>Client</h2>
+      <select id="clientsel">
+        <option value="">— choose a saved client —</option>
+      </select>
+      <div class="row">
+        <button class="secondary" id="saveclient">💾 Save current as client</button>
       </div>
-      <div id="mapresult" class="meta" style="margin-top:6px;"></div>
     </div>
+
+    <div class="card">
+      <h2>Client details → auto-fill</h2>
+      <textarea id="profile" rows="8" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="automap">✨ Auto-fill</button>
+        <button class="secondary" id="download">⬇ Download filled PDF</button>
+      </div>
+      <div id="mapresult"></div>
+    </div>
+
     <div class="card">
       <h2>Fields (<span id="fieldcount"></span>)</h2>
       <div id="fieldlist"></div>
     </div>
   </div>
 </main>
+
+<footer>
+  FormNation is an independent prototype tool for financial advisers.
+  It is not affiliated with the Singapore Government, form.gov.sg, or any insurer.
+  AI-suggested values must always be reviewed by a human before use.
+</footer>
 
 <script>
 const $ = id => document.getElementById(id);
@@ -117,12 +216,30 @@ function idle() {
   $('busy').classList.remove('on');
   for (const b of document.querySelectorAll('button')) b.disabled = false;
 }
+function setStep(n) {
+  for (let i = 1; i <= 3; i++) {
+    const el = $('step' + i);
+    el.classList.toggle('active', i === n);
+    el.classList.toggle('done', i < n);
+  }
+}
 
 let DOC = null;            // {doc_id, pages, fields, tier}
 let PAGE = 0;
 let VALUES = {};           // field id -> value
 let CONF = {};             // field id -> {confidence, source_key}
 let ISSUES = {};           // field id -> validation warning message
+
+$('profile').value = JSON.stringify({
+  name: "Tan Ah Kow",
+  nric: "S1234567D",
+  policy_no: "PA-0012345",
+  address: "Blk 123 Bedok North Ave 1 #05-67 S(460123)",
+  phone: "91234567",
+  email: "ahkow@example.com",
+  date_of_birth: "01/02/1980",
+  occupation: "Technician"
+}, null, 2);
 
 async function revalidate() {
   if (!DOC) return;
@@ -134,16 +251,36 @@ async function revalidate() {
   for (const i of (await res.json()).issues) ISSUES[i.field_id] = i.message;
 }
 
-$('profile').value = JSON.stringify({
-  name: "Tan Ah Kow",
-  nric: "S1234567A",
-  policy_no: "PA-0012345",
-  address: "Blk 123 Bedok North Ave 1 #05-67 S(460123)",
-  phone: "91234567",
-  email: "ahkow@example.com",
-  date_of_birth: "01/02/1980",
-  occupation: "Technician"
-}, null, 2);
+// ---- saved clients ----
+async function loadClients() {
+  const res = await fetch('/api/clients');
+  const { clients } = await res.json();
+  const sel = $('clientsel');
+  sel.innerHTML = '<option value="">— choose a saved client —</option>';
+  for (const c of clients) {
+    const opt = document.createElement('option');
+    opt.value = JSON.stringify(c.profile);
+    opt.textContent = `👤 ${c.name}`;
+    sel.appendChild(opt);
+  }
+}
+$('clientsel').onchange = e => {
+  if (!e.target.value) return;
+  $('profile').value = JSON.stringify(JSON.parse(e.target.value), null, 2);
+};
+$('saveclient').onclick = async () => {
+  let profile;
+  try { profile = JSON.parse($('profile').value); }
+  catch { alert('Client details are not valid JSON'); return; }
+  const name = profile.name || prompt('Client name?');
+  if (!name) return;
+  await fetch('/api/clients', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, profile }),
+  });
+  await loadClients();
+};
+loadClients();
 
 // ---- upload ----
 const drop = $('drop');
@@ -174,14 +311,15 @@ if (docParam) {
 
 function loadDoc(d) {
   DOC = d;
-  VALUES = {}; CONF = {};
+  VALUES = {}; CONF = {}; ISSUES = {};
   for (const f of DOC.fields) if (f.value) VALUES[f.id] = f.value;
   PAGE = 0;
-  drop.hidden = true;
+  $('hero').hidden = true;
   $('workspace').hidden = false;
+  setStep(2);
   $('docmeta').textContent = `${DOC.filename} — ${DOC.pages.length} pages, ${DOC.fields.length} fields`;
-  const tierNames = {1: ' — fillable AcroForm', 2: ' — flattened PDF (CV-detected areas)', 3: ' — scan (CV-detected areas)'};
-  $('tierbadge').innerHTML = `<span class="tier">Tier ${DOC.tier}${tierNames[DOC.tier] || ''}</span>`;
+  const tierNames = {1: 'fillable PDF', 2: 'flattened PDF · detected areas', 3: 'scan · OCR'};
+  $('tierbadge').innerHTML = `<span class="tier">${tierNames[DOC.tier] || 'unknown'}</span>`;
   showPage();
   renderFieldList();
 }
@@ -194,16 +332,14 @@ function showPage() {
   img.src = `/api/render/${DOC.doc_id}/${PAGE}?scale=2`;
   img.onload = drawOverlay;
 }
-$('prev').onclick = () => { if (PAGE > 0) { PAGE--; showPage(); } };
-$('next').onclick = () => { if (PAGE < DOC.pages.length - 1) { PAGE++; showPage(); } };
+$('prev').onclick = () => { if (PAGE > 0) { PAGE--; showPage(); renderFieldList(); } };
+$('next').onclick = () => { if (PAGE < DOC.pages.length - 1) { PAGE++; showPage(); renderFieldList(); } };
 $('showboxes').onchange = drawOverlay;
 $('showgrid').onchange = drawOverlay;
 new ResizeObserver(drawOverlay).observe(img);
 
 function drawOverlay() {
   if (!DOC || !img.naturalWidth) return;
-  // canvas must match the full image size (not the scrollable viewport),
-  // and use devicePixelRatio for crisp lines
   const w = img.clientWidth, h = img.clientHeight;
   const dpr = window.devicePixelRatio || 1;
   canvas.width = w * dpr; canvas.height = h * dpr;
@@ -219,13 +355,13 @@ function drawOverlay() {
       const [x0, y0, x1, y1] = f.rect.map(v => v * s);
       const filled = VALUES[f.id] !== undefined && VALUES[f.id] !== '' && VALUES[f.id] !== false;
       ctx.lineWidth = f.id === HL ? 3 : 1.5;
-      ctx.strokeStyle = f.type === 'Signature' ? '#d97706'
-                       : filled ? '#16a34a' : '#2563eb';
-      ctx.fillStyle = filled ? 'rgba(22,163,74,.10)' : 'rgba(37,99,235,.06)';
+      ctx.strokeStyle = f.type === 'Signature' ? '#b54708'
+                       : filled ? '#0f7b3e' : '#4a61c4';
+      ctx.fillStyle = filled ? 'rgba(15,123,62,.10)' : 'rgba(74,97,196,.06)';
       ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
       ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
       if (filled && f.type === 'Text') {
-        ctx.fillStyle = '#166534';
+        ctx.fillStyle = '#0b5c2e';
         ctx.font = `${Math.min(12, (y1 - y0) * 0.7)}px sans-serif`;
         ctx.fillText(String(VALUES[f.id]), x0 + 3, y1 - 3, x1 - x0 - 6);
       }
@@ -234,7 +370,6 @@ function drawOverlay() {
 }
 
 function drawGrid(w, h) {
-  // labelled grid — the "LLM view" for tier 2/3 vision prompting
   const step = w / 12;
   ctx.strokeStyle = 'rgba(220,38,38,.35)';
   ctx.fillStyle = 'rgba(220,38,38,.8)';
@@ -284,7 +419,7 @@ function renderFieldList() {
         const warn = document.createElement('span');
         warn.textContent = '⚠️';
         warn.title = ISSUES[f.id];
-        inp.style.borderColor = '#d97706';
+        inp.style.borderColor = '#b54708';
         row.appendChild(warn);
       }
       if (CONF[f.id]) {
@@ -293,21 +428,19 @@ function renderFieldList() {
         tag.className = 'conf';
         tag.style.background = c >= 0.8 ? 'var(--ok)' : 'var(--warn)';
         tag.textContent = Math.round(c * 100) + '%';
-        tag.title = 'matched profile key: ' + CONF[f.id].source_key;
+        tag.title = 'matched from: ' + CONF[f.id].source_key;
         row.appendChild(tag);
       }
     }
     box.appendChild(row);
   }
 }
-$('prev').addEventListener('click', renderFieldList);
-$('next').addEventListener('click', renderFieldList);
 
 // ---- automap ----
 $('automap').onclick = async () => {
   let profile;
   try { profile = JSON.parse($('profile').value); }
-  catch { alert('Profile is not valid JSON'); return; }
+  catch { alert('Client details are not valid JSON'); return; }
   busy(DOC.tier === 1 ? 'mapping fields…' : 'mapping fields (set-of-marks)…');
   try {
     const res = await fetch(`/api/automap/${DOC.doc_id}`, {
@@ -327,8 +460,8 @@ $('automap').onclick = async () => {
     const unmapped = Object.keys(profile).filter(k => !usedKeys.has(k));
     const warnings = Object.keys(ISSUES).length;
     let msg = `${n} fields auto-filled via ${engine} — review before download.`;
-    if (unmapped.length) msg += ` Not placed (fill manually): ${unmapped.join(', ')}.`;
-    if (warnings) msg += ` ⚠️ ${warnings} value(s) failed validation — see field list.`;
+    if (unmapped.length) msg += `\n🖐 Not placed (fill manually): ${unmapped.join(', ')}.`;
+    if (warnings) msg += `\n⚠️ ${warnings} value(s) failed validation — see field list.`;
     $('mapresult').textContent = msg;
     renderFieldList(); drawOverlay();
   } finally { idle(); }
@@ -349,6 +482,7 @@ $('download').onclick = async () => {
     a.download = 'filled.pdf';
     a.click();
     URL.revokeObjectURL(a.href);
+    setStep(3);
   } finally { idle(); }
 };
 </script>

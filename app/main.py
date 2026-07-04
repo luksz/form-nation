@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app import llm, ocr, validate, vision
+from app import db, llm, ocr, validate, vision
 
 load_dotenv()
 
@@ -156,6 +156,8 @@ async def upload(file: UploadFile):
     result = doc_payload(doc_id, doc, file.filename)
     doc.close()
     sidecar_path(doc_id).write_text(json.dumps(result))
+    db.record_form(doc_id, file.filename, result["tier"],
+                   len(result["pages"]), len(result["fields"]))
     return result
 
 
@@ -276,21 +278,60 @@ def automap(doc_id: str, req: MapRequest):
     tier = payload["tier"]
     fields = [f for f in payload["fields"] if f["type"] == "Text"]
     if not llm.api_key():
-        return {"engine": "fuzzy (no GEMINI_API_KEY set)",
-                "suggestions": fuzzy_map(fields, req.profile)}
-    try:
-        if tier == 1:
-            return {"engine": llm.GEMINI_MODEL,
-                    "suggestions": llm.map_fields(fields, req.profile)}
-        doc = get_doc(doc_id)
+        result = {"engine": "fuzzy (no GEMINI_API_KEY set)",
+                  "suggestions": fuzzy_map(fields, req.profile)}
+    else:
         try:
-            return {"engine": f"{llm.GEMINI_MODEL} + set-of-marks",
-                    "suggestions": automap_markers(doc, fields, req.profile)}
-        finally:
-            doc.close()
-    except Exception as e:
-        return {"engine": f"fuzzy (LLM failed: {e})",
-                "suggestions": fuzzy_map(fields, req.profile)}
+            if tier == 1:
+                result = {"engine": llm.GEMINI_MODEL,
+                          "suggestions": llm.map_fields(fields, req.profile)}
+            else:
+                doc = get_doc(doc_id)
+                try:
+                    result = {
+                        "engine": f"{llm.GEMINI_MODEL} + set-of-marks",
+                        "suggestions": automap_markers(doc, fields,
+                                                       req.profile)}
+                finally:
+                    doc.close()
+        except Exception as e:
+            result = {"engine": f"fuzzy (LLM failed: {e})",
+                      "suggestions": fuzzy_map(fields, req.profile)}
+    db.log_event(doc_id, "automap", {
+        "engine": result["engine"],
+        "mappings": {fid: {"key": s["source_key"], "conf": s["confidence"]}
+                     for fid, s in result["suggestions"].items()}})
+    db.set_form_status(doc_id, "mapped")
+    return result
+
+
+class ClientRequest(BaseModel):
+    name: str
+    profile: dict[str, str]
+
+
+@app.get("/api/clients")
+def clients_list():
+    return {"clients": db.list_clients()}
+
+
+@app.post("/api/clients")
+def clients_save(req: ClientRequest):
+    if not req.name.strip():
+        raise HTTPException(400, "Client name required")
+    return {"id": db.save_client(req.name, req.profile)}
+
+
+@app.delete("/api/clients/{client_id}")
+def clients_delete(client_id: int):
+    if not db.delete_client(client_id):
+        raise HTTPException(404, "No such client")
+    return {"ok": True}
+
+
+@app.get("/api/history")
+def history():
+    return {"forms": db.form_history()}
 
 
 class ValidateRequest(BaseModel):
@@ -357,6 +398,8 @@ def fill(doc_id: str, req: FillRequest):
     out = UPLOAD_DIR / f"{doc_id}_filled.pdf"
     doc.save(out)
     doc.close()
+    db.log_event(doc_id, "fill", {"filled": filled, "skipped": skipped})
+    db.set_form_status(doc_id, "filled")
     return FileResponse(
         out,
         media_type="application/pdf",
