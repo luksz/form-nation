@@ -41,6 +41,11 @@ load_dotenv()
 API = os.environ.get("FORM_NATION_API", "http://127.0.0.1:8477")
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
+from pathlib import Path  # noqa: E402
+
+TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "data" / "templates"
+TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("form-nation-bot")
 
@@ -58,7 +63,11 @@ HELP = (
     "• After each message I show what I've captured and what's still "
     "missing.\n"
     "• Tap 📝 Fill the form when you're satisfied — you always review a "
-    "preview before anything is final. Signature fields are never filled."
+    "preview before anything is final. Signature fields are never filled.\n\n"
+    "Commands:\n"
+    "/newclaim — start a claim from a registered form template\n"
+    "/newtype <name> — register a claim type (then send its blank form once)\n"
+    "/clients — list saved clients (auto-saved whenever you approve a claim)"
 )
 
 
@@ -84,9 +93,13 @@ def _api() -> httpx.AsyncClient:
 
 
 async def _ingest(update: Update, pdf_bytes: bytes, filename: str):
+    await ingest_bytes(update.effective_chat.id, update.get_bot(),
+                       pdf_bytes, filename)
+
+
+async def ingest_bytes(chat_id: int, bot, pdf_bytes: bytes, filename: str):
     """Upload a form to the pipeline and prompt for client details."""
-    chat_id = update.effective_chat.id
-    msg = await update.message.reply_text("📄 Analysing the form…")
+    msg = await bot.send_message(chat_id, "📄 Analysing the form…")
     async with _api() as api:
         r = await api.post("/api/upload",
                            files={"file": (filename, pdf_bytes,
@@ -135,7 +148,45 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Please send a PDF, or send the form as a photo.")
         return
+    session = SESSIONS.setdefault(update.effective_chat.id, {"profile": {}})
+    if session.get("awaiting_type"):
+        type_name = session.pop("awaiting_type")
+        path = TEMPLATES_DIR / f"{type_name.lower().replace(' ', '-')}.pdf"
+        path.write_bytes(data)
+        db.save_type(type_name, str(path), name)
+        await update.message.reply_text(
+            f"📚 Claim type \"{type_name}\" registered.\n"
+            "Start one anytime with /newclaim — no need to send this "
+            "form again.")
+        return
     await _ingest(update, data, name)
+
+
+async def newtype_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    name = " ".join(ctx.args).strip() if ctx.args else ""
+    if not name:
+        await update.message.reply_text(
+            "Usage: /newtype <name>\ne.g. /newtype Personal Accident\n"
+            "Then send me the blank form PDF for that claim type.")
+        return
+    session = SESSIONS.setdefault(update.effective_chat.id, {"profile": {}})
+    session["awaiting_type"] = name
+    await update.message.reply_text(
+        f"📎 OK — send me the blank \"{name}\" form (PDF) now.")
+
+
+async def newclaim_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    types = db.list_types()
+    if not types:
+        await update.message.reply_text(
+            "No claim types registered yet.\n"
+            "Create one with /newtype <name>, then send its blank form once.")
+        return
+    rows = [[InlineKeyboardButton(f"📄 {t['name']}",
+                                  callback_data=f"type:{t['id']}")]
+            for t in types[:12]]
+    await update.message.reply_text(
+        "Which claim type?", reply_markup=InlineKeyboardMarkup(rows))
 
 
 async def handle_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -291,6 +342,18 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not session:
         await query.edit_message_text("Session expired — send the form again.")
         return
+    if query.data.startswith("type:"):
+        ctype = db.get_type(int(query.data.split(":", 1)[1]))
+        if ctype is None or not Path(ctype["path"]).exists():
+            await query.message.reply_text(
+                "That claim type's template is missing — re-register it "
+                "with /newtype.")
+            return
+        await query.message.reply_text(f"📄 Starting a {ctype['name']} claim…")
+        await ingest_bytes(chat_id, ctx.bot,
+                           Path(ctype["path"]).read_bytes(),
+                           ctype["filename"] or f"{ctype['name']}.pdf")
+        return
     if query.data.startswith("client:"):
         client = db.get_client(int(query.data.split(":", 1)[1]))
         if client is None:
@@ -329,11 +392,16 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 "button whenever you send a form.")
         return
     if query.data == "approve":
+        caption = ("Here you go. Remember: the client still signs it "
+                   "themselves — signature fields were left empty.")
+        profile = session.get("profile") or {}
+        if profile.get("name"):  # auto-create/update the client record
+            db.save_client(profile["name"], profile)
+            caption += f"\n👤 Client record for {profile['name']} updated."
         await query.message.reply_document(
             document=io.BytesIO(session["filled"]),
             filename="filled-" + session["doc"]["filename"],
-            caption="Here you go. Remember: the client still signs it "
-                    "themselves — signature fields were left empty.")
+            caption=caption)
         await query.edit_message_text(query.message.text + "\n\n✅ Delivered.")
         SESSIONS.pop(chat_id, None)
     elif query.data == "discard":
@@ -349,6 +417,8 @@ def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("clients", clients_cmd))
+    app.add_handler(CommandHandler("newtype", newtype_cmd))
+    app.add_handler(CommandHandler(["newclaim", "types"], newclaim_cmd))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,

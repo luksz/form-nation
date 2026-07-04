@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS forms (
     source TEXT DEFAULT 'web',
     created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS claim_types (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    path TEXT NOT NULL,
+    filename TEXT,
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY,
     doc_id TEXT NOT NULL,
@@ -87,6 +94,43 @@ def save_client(name: str, profile: dict) -> int:
 def delete_client(client_id: int) -> bool:
     with connect() as c:
         cur = c.execute("DELETE FROM clients WHERE id=?", (client_id,))
+    return cur.rowcount > 0
+
+
+# ---- claim types (registered blank-form templates) ----
+
+def list_types() -> list[dict]:
+    with connect() as c:
+        rows = c.execute(
+            "SELECT id, name, path, filename FROM claim_types"
+            " ORDER BY name").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_type(type_id: int) -> dict | None:
+    with connect() as c:
+        r = c.execute("SELECT id, name, path, filename FROM claim_types"
+                      " WHERE id=?", (type_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def save_type(name: str, path: str, filename: str) -> int:
+    now = time.time()
+    with connect() as c:
+        c.execute(
+            "INSERT INTO claim_types (name, path, filename, created_at)"
+            " VALUES (?, ?, ?, ?)"
+            " ON CONFLICT(name) DO UPDATE SET path=excluded.path,"
+            " filename=excluded.filename",
+            (name.strip(), path, filename, now))
+        row = c.execute("SELECT id FROM claim_types WHERE name=?",
+                        (name.strip(),)).fetchone()
+    return row["id"]
+
+
+def delete_type(type_id: int) -> bool:
+    with connect() as c:
+        cur = c.execute("DELETE FROM claim_types WHERE id=?", (type_id,))
     return cur.rowcount > 0
 
 
