@@ -409,12 +409,30 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🗑 Discarded. Send a new form anytime.")
 
 
+async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE):
+    """Never fail silently — tell the chat something went wrong."""
+    log.exception("handler error", exc_info=ctx.error)
+    chat = getattr(update, "effective_chat", None)
+    if chat is not None:
+        try:
+            await ctx.bot.send_message(
+                chat.id,
+                "⚠️ Something went wrong on my side "
+                f"({type(ctx.error).__name__}). Please try that again.")
+        except Exception:
+            pass
+
+
 def main():
     if not TOKEN:
         raise SystemExit(
             "TELEGRAM_BOT_TOKEN not set. Create a bot with @BotFather on "
             "Telegram, then add TELEGRAM_BOT_TOKEN=... to .env")
-    app = Application.builder().token(TOKEN).build()
+    app = (Application.builder().token(TOKEN)
+           .connect_timeout(20).read_timeout(60)
+           .write_timeout(60).media_write_timeout(120)
+           .pool_timeout(20).build())
+    app.add_error_handler(on_error)
     app.add_handler(CommandHandler(["start", "help"], start))
     app.add_handler(CommandHandler("clients", clients_cmd))
     app.add_handler(CommandHandler("newtype", newtype_cmd))
