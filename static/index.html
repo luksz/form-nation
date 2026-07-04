@@ -122,6 +122,17 @@ let DOC = null;            // {doc_id, pages, fields, tier}
 let PAGE = 0;
 let VALUES = {};           // field id -> value
 let CONF = {};             // field id -> {confidence, source_key}
+let ISSUES = {};           // field id -> validation warning message
+
+async function revalidate() {
+  if (!DOC) return;
+  const res = await fetch(`/api/validate/${DOC.doc_id}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ values: VALUES }),
+  });
+  ISSUES = {};
+  for (const i of (await res.json()).issues) ISSUES[i.field_id] = i.message;
+}
 
 $('profile').value = JSON.stringify({
   name: "Tan Ah Kow",
@@ -269,6 +280,13 @@ function renderFieldList() {
       inp.value = VALUES[f.id] ?? '';
       inp.oninput = () => { VALUES[f.id] = inp.value; drawOverlay(); };
       row.appendChild(inp);
+      if (ISSUES[f.id]) {
+        const warn = document.createElement('span');
+        warn.textContent = '⚠️';
+        warn.title = ISSUES[f.id];
+        inp.style.borderColor = '#d97706';
+        row.appendChild(warn);
+      }
       if (CONF[f.id]) {
         const c = CONF[f.id].confidence;
         const tag = document.createElement('span');
@@ -298,12 +316,20 @@ $('automap').onclick = async () => {
     });
     const { suggestions, engine } = await res.json();
     let n = 0;
+    const usedKeys = new Set();
     for (const [id, s] of Object.entries(suggestions)) {
       VALUES[id] = s.value;
       CONF[id] = s;
+      usedKeys.add(s.source_key);
       n++;
     }
-    $('mapresult').textContent = `${n} fields auto-filled via ${engine} — review before download`;
+    await revalidate();
+    const unmapped = Object.keys(profile).filter(k => !usedKeys.has(k));
+    const warnings = Object.keys(ISSUES).length;
+    let msg = `${n} fields auto-filled via ${engine} — review before download.`;
+    if (unmapped.length) msg += ` Not placed (fill manually): ${unmapped.join(', ')}.`;
+    if (warnings) msg += ` ⚠️ ${warnings} value(s) failed validation — see field list.`;
+    $('mapresult').textContent = msg;
     renderFieldList(); drawOverlay();
   } finally { idle(); }
 };

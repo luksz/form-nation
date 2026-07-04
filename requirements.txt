@@ -6,3 +6,4 @@ httpx
 opencv-python-headless
 numpy
 rapidocr-onnxruntime
+python-telegram-bot>=21

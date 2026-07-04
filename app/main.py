@@ -6,7 +6,9 @@ auto-map a profile JSON onto fields (fuzzy) -> fill and download.
 
 import difflib
 import json
+import os
 import re
+import time
 import uuid
 from pathlib import Path
 
@@ -16,7 +18,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app import llm, ocr, vision
+from app import llm, ocr, validate, vision
 
 load_dotenv()
 
@@ -28,6 +30,22 @@ app = FastAPI(title="form-nation")
 
 # doc_id -> pdf path (prototype keeps state in memory; uploads persist on disk)
 DOCS: dict[str, Path] = {}
+
+# data retention: uploaded forms and filled outputs are sensitive — sweep them
+RETENTION_HOURS = float(os.environ.get("RETENTION_HOURS", "24"))
+
+
+def sweep_uploads():
+    cutoff = time.time() - RETENTION_HOURS * 3600
+    for p in UPLOAD_DIR.iterdir():
+        try:
+            if p.is_file() and p.stat().st_mtime < cutoff:
+                p.unlink()
+        except OSError:
+            pass
+
+
+sweep_uploads()
 
 
 def detect_tier(doc: fitz.Document) -> int:
@@ -118,6 +136,7 @@ def doc_payload(doc_id: str, doc: fitz.Document, filename: str) -> dict:
 
 @app.post("/api/upload")
 async def upload(file: UploadFile):
+    sweep_uploads()
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(400, "Please upload a PDF")
     doc_id = uuid.uuid4().hex[:12]
@@ -272,6 +291,16 @@ def automap(doc_id: str, req: MapRequest):
     except Exception as e:
         return {"engine": f"fuzzy (LLM failed: {e})",
                 "suggestions": fuzzy_map(fields, req.profile)}
+
+
+class ValidateRequest(BaseModel):
+    values: dict[str, object]
+
+
+@app.post("/api/validate/{doc_id}")
+def validate_values(doc_id: str, req: ValidateRequest):
+    payload = load_payload(doc_id)
+    return {"issues": validate.check_all(payload["fields"], req.values)}
 
 
 # ---- fill & export ----
