@@ -5,9 +5,11 @@ claim form (or just *describe the claim in chat*), and FormNation extracts the
 details, fills the form, checks its own work, and returns a reviewed PDF —
 via a Telegram bot or a web UI.
 
-Design and roadmap: [PLAN.md](PLAN.md) ·
+Design rationale: [PLAN.md](PLAN.md) ·
+Security status & pre-real-data checklist: [SECURITY.md](SECURITY.md) ·
+Data flows & privacy: [docs/data-handling.md](docs/data-handling.md) ·
 Fragility/cost/compliance analysis: [docs/production-notes.md](docs/production-notes.md) ·
-Data flows & privacy: [docs/data-handling.md](docs/data-handling.md)
+What's next: [TODO.md](TODO.md)
 
 ## How it works
 

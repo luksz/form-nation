@@ -1,8 +1,15 @@
-# Form-Nation — Auto Form-Filling Agent for FA Forms
+# FormNation — Auto Form-Filling Agent for FA Forms
 
 **Goal:** Upload a Financial Assistance / insurance claim form (PDF), have an agent
 figure out where every field is, fill it from the user's profile data, show the result
 as a visual overlay for human review, and export the filled PDF.
+
+> **Status (July 2026): all milestones below (M0–M4) are complete and verified**,
+> plus additions beyond the original plan: a conversational Telegram intake bot
+> (claim types, gap tracking, auto-saved clients), checkbox support, read-back
+> verification, a claims dashboard, and a security/data-protection layer
+> (see [SECURITY.md](SECURITY.md)). Current work is tracked in [TODO.md](TODO.md).
+> This document is kept as the original design rationale.
 
 ---
 
