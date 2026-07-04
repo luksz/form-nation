@@ -129,6 +129,51 @@ may appear at most once.
 """
 
 
+EXTRACT_PROMPT = """\
+You are an intake assistant for a financial adviser handling an insurance /
+financial-assistance claim. The adviser sends free-form messages about the
+client and the claim (notes, forwarded client texts). Extract every concrete
+fact into flat snake_case keys with verbatim values.
+
+Preferred canonical keys (use these when applicable, invent sensible
+snake_case keys for anything else): name, nric, policy_no, address, phone,
+email, date_of_birth, occupation, employer, accident_date, accident_time,
+accident_description, injuries, hospital, doctor, bank, account_no.
+
+Rules:
+- Extract only facts actually stated. Never guess or fabricate.
+- Values verbatim (keep the adviser's formatting for dates/numbers).
+- If the message corrects an earlier fact, output the new value.
+
+ALREADY COLLECTED (do not repeat unless corrected):
+{known}
+
+FORM FIELDS this claim must eventually fill (may be empty if no form yet):
+{form_fields}
+
+NEW MESSAGE FROM THE ADVISER:
+{message}
+
+Return JSON: {{"extracted": {{<key>: <value>, ...}},
+"missing": [<up to 8 important details still not collected, as short
+human-readable labels, prioritising what the form needs>]}}
+"""
+
+
+def extract_details(message: str, known: dict[str, str],
+                    form_fields: list[str] | None) -> dict:
+    """Free-text intake: extract new facts + list what's still missing."""
+    known_lines = "\n".join(f"{k}: {v}" for k, v in known.items()) or "(none)"
+    fields = "\n".join(form_fields or []) or "(no form uploaded yet)"
+    result = generate(EXTRACT_PROMPT.format(
+        known=known_lines, form_fields=fields, message=message))
+    extracted = result.get("extracted", {}) if isinstance(result, dict) else {}
+    missing = result.get("missing", []) if isinstance(result, dict) else []
+    clean = {str(k).strip(): str(v).strip() for k, v in extracted.items()
+             if str(v).strip()}
+    return {"extracted": clean, "missing": [str(m) for m in missing][:8]}
+
+
 def map_markers(image_png: bytes, candidates: list[dict],
                 profile: dict[str, str]) -> list[dict]:
     """Tier 2/3: set-of-marks. The LLM only picks marker ids."""

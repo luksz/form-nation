@@ -35,7 +35,7 @@ from telegram.ext import (
     MessageHandler, filters,
 )
 
-from app import db
+from app import db, llm
 
 load_dotenv()
 API = os.environ.get("FORM_NATION_API", "http://127.0.0.1:8477")
@@ -48,10 +48,17 @@ log = logging.getLogger("form-nation-bot")
 SESSIONS: dict[int, dict] = {}
 
 HELP = (
-    "Send me a claim form (PDF or a clear photo) that your client sent you.\n"
-    "I'll detect its fields, then ask you for the client's details.\n\n"
-    "After that I show you a preview — nothing is final until you approve it. "
-    "Signature fields are always left for the client."
+    "I collect claim details as you message me, and I fill the form when "
+    "you're ready.\n\n"
+    "• Send the claim form (PDF or photo) whenever — before or after the "
+    "details.\n"
+    "• Then just tell me about the claim in normal messages, e.g.\n"
+    "  \"Tan Ah Kow S1234567D fell off his bike at ECP on 28 Jun, "
+    "fractured wrist, warded at CGH\"\n"
+    "• After each message I show what I've captured and what's still "
+    "missing.\n"
+    "• Tap 📝 Fill the form when you're satisfied — you always review a "
+    "preview before anything is final. Signature fields are never filled."
 )
 
 
@@ -89,7 +96,8 @@ async def _ingest(update: Update, pdf_bytes: bytes, filename: str):
                             f"{r.json().get('detail', r.status_code)}")
         return
     doc = r.json()
-    SESSIONS[chat_id] = {"doc": doc, "values": {}}
+    session = SESSIONS.setdefault(chat_id, {"profile": {}})
+    session["doc"] = doc
     tiers = {1: "fillable PDF — exact fields",
              2: "flattened PDF — detected areas",
              3: "scan/photo — OCR + detected areas"}
@@ -97,20 +105,21 @@ async def _ingest(update: Update, pdf_bytes: bytes, filename: str):
         f"✅ Form received: {doc['filename']}\n"
         f"• {len(doc['pages'])} page(s), {len(doc['fields'])} field(s)\n"
         f"• Type: {tiers.get(doc['tier'], '?')}\n\n"
-        "Pick a saved client below, or send the client's details, "
-        "one per line, like:\n\n"
-        "name: Tan Ah Kow\n"
-        "nric: S1234567D\n"
-        "policy_no: PA-0012345\n"
-        "phone: 91234567"
     )
-    clients = db.list_clients()
-    keyboard = None
-    if clients:
-        rows = [[InlineKeyboardButton(f"👤 {c['name']}",
-                                      callback_data=f"client:{c['id']}")]
-                for c in clients[:8]]
-        keyboard = InlineKeyboardMarkup(rows)
+    if session["profile"]:
+        text += (f"I already have {len(session['profile'])} detail(s) from "
+                 "your messages. Keep sending more, or tap 📝 to fill now.")
+    else:
+        text += ("Now tell me about the claim in normal messages — or pick "
+                 "a saved client to start from.")
+    rows = []
+    if session["profile"]:
+        rows.append([InlineKeyboardButton("📝 Fill the form now",
+                                          callback_data="fillnow")])
+    rows += [[InlineKeyboardButton(f"👤 {c['name']}",
+                                   callback_data=f"client:{c['id']}")]
+             for c in db.list_clients()[:6]]
+    keyboard = InlineKeyboardMarkup(rows) if rows else None
     await msg.edit_text(text, reply_markup=keyboard)
 
 
@@ -155,18 +164,52 @@ def parse_profile(text: str) -> dict[str, str]:
 
 
 async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Conversational intake: extract facts from any message, track gaps."""
     chat_id = update.effective_chat.id
-    session = SESSIONS.get(chat_id)
-    if not session:
-        await update.message.reply_text(
-            "Send me a claim form first (PDF or photo).\n\n" + HELP)
-        return
-    profile = parse_profile(update.message.text)
-    if not profile:
-        await update.message.reply_text(
-            "I couldn't read any details. Use one `key: value` per line.")
-        return
-    await run_mapping(chat_id, ctx, profile, offer_save=True)
+    session = SESSIONS.setdefault(chat_id, {"profile": {}})
+    doc = session.get("doc")
+    form_fields = ([f["name"] for f in doc["fields"]
+                    if f["type"] != "Signature"] if doc else None)
+
+    thinking = await update.message.reply_text("🤔 Reading that…")
+    try:
+        result = llm.extract_details(update.message.text,
+                                     session["profile"], form_fields)
+    except Exception:
+        # offline fallback: accept key: value lines
+        kv = parse_profile(update.message.text)
+        result = {"extracted": kv, "missing": []}
+    new = result["extracted"]
+    session["profile"].update(new)
+
+    lines = []
+    if new:
+        lines.append("📥 Captured just now:")
+        lines += [f"  • {k.replace('_', ' ')}: {v}" for k, v in new.items()]
+    else:
+        lines.append("🤷 No new details found in that message.")
+    lines.append(f"\n📋 Total collected: {len(session['profile'])} detail(s)")
+    if result["missing"]:
+        lines.append("❓ Still missing:")
+        lines += [f"  • {m}" for m in result["missing"]]
+    if not doc:
+        lines.append("\n📎 Send me the claim form (PDF/photo) when ready.")
+
+    buttons = []
+    if doc and session["profile"]:
+        buttons.append([InlineKeyboardButton("📝 Fill the form now",
+                                             callback_data="fillnow")])
+    row2 = []
+    if session["profile"].get("name"):
+        row2.append(InlineKeyboardButton(
+            f"💾 Save \"{session['profile']['name']}\"",
+            callback_data="save_client"))
+    row2.append(InlineKeyboardButton("🗑 Reset details",
+                                     callback_data="reset"))
+    buttons.append(row2)
+    session["profile_dirty"] = True
+    await thinking.edit_text("\n".join(lines),
+                             reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
@@ -253,15 +296,37 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if client is None:
             await query.message.reply_text("That client was deleted.")
             return
-        await run_mapping(chat_id, ctx, client["profile"])
+        session.setdefault("profile", {}).update(client["profile"])
+        keyboard = InlineKeyboardMarkup([[InlineKeyboardButton(
+            "📝 Fill the form now", callback_data="fillnow")]]) \
+            if session.get("doc") else None
+        await query.message.reply_text(
+            f"👤 Loaded {client['name']} ({len(client['profile'])} details). "
+            "Send more claim details, or fill now.",
+            reply_markup=keyboard)
+        return
+    if query.data == "fillnow":
+        if not session.get("doc"):
+            await query.message.reply_text(
+                "📎 Send me the claim form first (PDF or photo).")
+            return
+        if not session.get("profile"):
+            await query.message.reply_text("No details collected yet.")
+            return
+        await run_mapping(chat_id, ctx, session["profile"])
+        return
+    if query.data == "reset":
+        session["profile"] = {}
+        await query.message.reply_text(
+            "🗑 Details cleared. Tell me about the claim from scratch.")
         return
     if query.data == "save_client":
         profile = session.get("profile") or {}
         if profile.get("name"):
             db.save_client(profile["name"], profile)
             await query.message.reply_text(
-                f"💾 Saved \"{profile['name']}\" — next time they'll appear "
-                "as a button when you send a form.")
+                f"💾 Saved \"{profile['name']}\" — they'll appear as a "
+                "button whenever you send a form.")
         return
     if query.data == "approve":
         await query.message.reply_document(
