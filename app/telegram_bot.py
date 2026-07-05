@@ -123,13 +123,22 @@ async def clients_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     clients = db.list_clients()
     if not clients:
         await update.message.reply_text(
-            "No saved clients yet. After you paste a client's details for a "
-            "form, tap 💾 Save to keep them for reuse.")
+            "No saved clients yet. They're saved automatically when you "
+            "approve a claim, or via the 💾 button during intake.")
         return
-    lines = [f"• {c['name']} ({len(c['profile'])} details)" for c in clients]
+    rows = [[InlineKeyboardButton(f"👤 {c['name']} ({len(c['profile'])})",
+                                  callback_data=f"viewclient:{c['id']}")]
+            for c in clients[:12]]
     await update.message.reply_text(
-        "Saved clients:\n" + "\n".join(lines) +
-        "\n\nThey appear as buttons whenever you send a form.")
+        "Saved clients — tap one to view or update:",
+        reply_markup=InlineKeyboardMarkup(rows))
+
+
+def client_details_text(client: dict) -> str:
+    lines = [f"👤 {client['name']}"]
+    lines += [f"  • {k.replace('_', ' ')}: {v}"
+              for k, v in client["profile"].items()]
+    return "\n".join(lines)
 
 
 def _api() -> httpx.AsyncClient:
@@ -264,6 +273,9 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     """Conversational intake: extract facts from any message, track gaps."""
     chat_id = update.effective_chat.id
     session = SESSIONS.setdefault(chat_id, {"profile": {}})
+    if session.get("editing_client"):
+        await edit_client_text(update, ctx, session)
+        return
     doc = session.get("doc")
     form_fields = ([f["name"] for f in doc["fields"]
                     if f["type"] != "Signature"] if doc else None)
@@ -308,6 +320,53 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     session["profile_dirty"] = True
     await thinking.edit_text("\n".join(lines),
                              reply_markup=InlineKeyboardMarkup(buttons))
+
+
+async def edit_client_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE,
+                           session: dict):
+    """Editing mode: messages update the saved client record directly."""
+    chat_id = update.effective_chat.id
+    client = db.get_client(session["editing_client"])
+    if client is None:
+        session.pop("editing_client", None)
+        await update.message.reply_text("That client no longer exists.")
+        return
+    text = update.message.text.strip()
+    done_btn = InlineKeyboardMarkup([[InlineKeyboardButton(
+        "✅ Done updating", callback_data="editdone")]])
+
+    if text.lower().startswith("remove "):
+        target = re.sub(r"[^a-z0-9]+", "_", text[7:].strip().lower())
+        removed = [k for k in list(client["profile"])
+                   if k == target or target in k]
+        for k in removed:
+            client["profile"].pop(k)
+        db.save_client(client["name"], client["profile"])
+        msg = (f"🗑 Removed: {', '.join(removed)}" if removed
+               else f"No field matching \"{text[7:].strip()}\" found.")
+        await update.message.reply_text(
+            msg + "\n\n" + client_details_text(client), reply_markup=done_btn)
+        return
+
+    await ctx.bot.send_chat_action(chat_id, ChatAction.TYPING)
+    try:
+        result = llm.extract_details(text, client["profile"], None)
+        new = result["extracted"]
+    except Exception:
+        new = parse_profile(text)
+    if not new:
+        await update.message.reply_text(
+            "🤷 No details found in that message. Try e.g. "
+            "\"new phone 91112222\" or \"remove email\".",
+            reply_markup=done_btn)
+        return
+    client["profile"].update(new)
+    db.save_client(client["name"], client["profile"])
+    changes = "\n".join(f"  • {k.replace('_', ' ')}: {v}"
+                        for k, v in new.items())
+    await update.message.reply_text(
+        f"📥 Updated:\n{changes}\n\n{client_details_text(client)}",
+        reply_markup=done_btn)
 
 
 async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
@@ -414,6 +473,37 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await ingest_bytes(chat_id, ctx.bot,
                            Path(ctype["path"]).read_bytes(),
                            ctype["filename"] or f"{ctype['name']}.pdf")
+        return
+    if query.data.startswith("viewclient:"):
+        client = db.get_client(int(query.data.split(":", 1)[1]))
+        if client is None:
+            await query.edit_message_text("That client was deleted.")
+            return
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✏️ Update details",
+                                 callback_data=f"editclient:{client['id']}"),
+            InlineKeyboardButton("🗑 Delete",
+                                 callback_data=f"delclient:{client['id']}"),
+        ]])
+        await query.edit_message_text(client_details_text(client),
+                                      reply_markup=keyboard)
+        return
+    if query.data.startswith("editclient:"):
+        client = db.get_client(int(query.data.split(":", 1)[1]))
+        if client is None:
+            await query.edit_message_text("That client was deleted.")
+            return
+        session["editing_client"] = client["id"]
+        await query.message.reply_text(
+            f"✏️ Updating {client['name']}. Send changes as normal messages "
+            "— e.g. \"new phone 91112222\", \"moved to Blk 55 Toa Payoh\", "
+            "or \"remove email\". Tap ✅ when done.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
+                "✅ Done updating", callback_data="editdone")]]))
+        return
+    if query.data == "editdone":
+        session.pop("editing_client", None)
+        await query.edit_message_text("✅ Client record updated and saved.")
         return
     if query.data.startswith("delclient:"):
         client = db.get_client(int(query.data.split(":", 1)[1]))
