@@ -21,6 +21,7 @@ Run:  .venv/bin/python -m app.telegram_bot   (needs TELEGRAM_BOT_TOKEN in .env)
 """
 
 import asyncio
+import html
 import io
 import logging
 import os
@@ -141,6 +142,45 @@ def client_details_text(client: dict) -> str:
     return "\n".join(lines)
 
 
+class Progress:
+    """One live-updating status message: steps get ⏳ then ✅ as they pass."""
+
+    def __init__(self, bot, chat_id: int):
+        self.bot, self.chat_id = bot, chat_id
+        self.lines: list[str] = []
+        self.msg = None
+
+    async def step(self, text: str, action=ChatAction.TYPING):
+        if self.lines:
+            self.lines[-1] = "✅" + self.lines[-1][1:]
+        self.lines.append(f"⏳ {text}")
+        try:
+            await self.bot.send_chat_action(self.chat_id, action)
+            body = "\n".join(self.lines)
+            if self.msg is None:
+                self.msg = await self.bot.send_message(self.chat_id, body)
+            else:
+                await self.msg.edit_text(body)
+        except Exception:
+            pass
+
+    async def finish(self, text: str, **kwargs):
+        try:
+            if self.msg is not None:
+                return await self.msg.edit_text(text, **kwargs)
+        except Exception:
+            pass
+        return await self.bot.send_message(self.chat_id, text, **kwargs)
+
+
+async def react(message, emoji: str = "👀"):
+    """Instant acknowledgment before any processing starts."""
+    try:
+        await message.set_reaction(emoji)
+    except Exception:
+        pass
+
+
 def _api() -> httpx.AsyncClient:
     headers = ({"Authorization": f"Bearer {ACCESS_TOKEN}"}
                if ACCESS_TOKEN else {})
@@ -203,6 +243,7 @@ async def handle_document(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "Please send a PDF, or send the form as a photo.")
         return
+    await react(update.message, "✍")
     session = SESSIONS.setdefault(update.effective_chat.id, {"profile": {}})
     if session.get("awaiting_type"):
         type_name = session.pop("awaiting_type")
@@ -280,6 +321,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     form_fields = ([f["name"] for f in doc["fields"]
                     if f["type"] != "Signature"] if doc else None)
 
+    await react(update.message)  # instant 👀 before the LLM thinks
     await ctx.bot.send_chat_action(chat_id, ChatAction.TYPING)
     thinking = await update.message.reply_text("🤔 Reading that…")
     try:
@@ -292,16 +334,22 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     new = result["extracted"]
     session["profile"].update(new)
 
+    esc = html.escape
     lines = []
     if new:
-        lines.append("📥 Captured just now:")
-        lines += [f"  • {k.replace('_', ' ')}: {v}" for k, v in new.items()]
+        lines.append("📥 <b>Captured just now</b>")
+        lines += [f"• <b>{esc(k.replace('_', ' '))}:</b> {esc(v)}"
+                  for k, v in new.items()]
     else:
         lines.append("🤷 No new details found in that message.")
-    lines.append(f"\n📋 Total collected: {len(session['profile'])} detail(s)")
+    collected = "\n".join(
+        f"• <b>{esc(k.replace('_', ' '))}:</b> {esc(v)}"
+        for k, v in session["profile"].items())
+    lines.append(f"\n📋 <b>Total collected: {len(session['profile'])}</b>"
+                 f"\n<blockquote expandable>{collected}</blockquote>")
     if result["missing"]:
-        lines.append("❓ Still missing:")
-        lines += [f"  • {m}" for m in result["missing"]]
+        lines.append("❓ <b>Still missing</b>")
+        lines += [f"• {esc(m)}" for m in result["missing"]]
     if not doc:
         lines.append("\n📎 Send me the claim form (PDF/photo) when ready.")
 
@@ -318,7 +366,7 @@ async def handle_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                                      callback_data="reset"))
     buttons.append(row2)
     session["profile_dirty"] = True
-    await thinking.edit_text("\n".join(lines),
+    await thinking.edit_text("\n".join(lines), parse_mode="HTML",
                              reply_markup=InlineKeyboardMarkup(buttons))
 
 
@@ -373,28 +421,37 @@ async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
                       profile: dict[str, str], offer_save: bool = False):
     session = SESSIONS.get(chat_id)
     doc = session["doc"]
-    await ctx.bot.send_chat_action(chat_id, ChatAction.UPLOAD_DOCUMENT)
-    msg = await ctx.bot.send_message(chat_id,
-                                     "🤖 Mapping details onto the form…")
+    progress = Progress(ctx.bot, chat_id)
     async with _api() as api:
+        await progress.step(
+            f"🧠 Mapping {len(profile)} details onto {len(doc['fields'])} "
+            "form fields…")
         r = await api.post(f"/api/automap/{doc['doc_id']}",
                            json={"profile": profile})
         result = r.json()
         suggestions = result.get("suggestions", {})
         values = {fid: s["value"] for fid, s in suggestions.items()}
+        await progress.step(
+            f"🧪 Validating {len(values)} values (NRIC checksum, formats)…")
         v = await api.post(f"/api/validate/{doc['doc_id']}",
                            json={"values": values})
         issues = v.json().get("issues", [])
+        await progress.step("🖊 Writing values into the PDF…",
+                            ChatAction.UPLOAD_DOCUMENT)
         f = await api.post(f"/api/fill/{doc['doc_id']}",
                            json={"values": values})
         filled_pdf = f.content
         readback = None
         try:  # closed-loop check: re-read the filled form
+            await progress.step(
+                "🔍 Read-back check — re-reading the filled form…")
             rb = await api.post(f"/api/verify/{doc['doc_id']}",
                                 json={"values": values})
             readback = rb.json() if rb.status_code == 200 else None
         except Exception:
             pass
+        await progress.step("📸 Rendering previews…",
+                            ChatAction.UPLOAD_PHOTO)
 
     session["values"] = values
     session["filled"] = filled_pdf
@@ -409,25 +466,34 @@ async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
         previews.append(InputMediaPhoto(io.BytesIO(pix.tobytes("png"))))
     filled_doc.close()
 
+    esc = html.escape
     names = {str(f_["id"]): f_["name"] for f_ in doc["fields"]}
-    lines = [f"• {s['source_key']} → {names.get(fid, fid)[:40]}"
-             f" ({int(s['confidence'] * 100)}%)"
+    lines = [f"• <b>{esc(s['source_key'])}</b> → "
+             f"{esc(names.get(fid, fid)[:40])} "
+             f"({int(s['confidence'] * 100)}%)"
              for fid, s in suggestions.items()]
     unmapped = [k for k in profile
                 if k not in {s["source_key"] for s in suggestions.values()}]
-    summary = (f"Mapped {len(suggestions)} field(s) via {result['engine']}:\n"
-               + "\n".join(lines[:20]))
+    summary = (f"✅ <b>Mapped {len(suggestions)} field(s)</b> "
+               f"<i>via {esc(result['engine'])}</i>\n"
+               "<blockquote expandable>"
+               + "\n".join(lines[:25]) + "</blockquote>")
     if unmapped:
-        summary += f"\n\n🖐 Not placed (do manually): {', '.join(unmapped)}"
+        summary += (f"\n🖐 <b>Not placed</b> (do manually): "
+                    f"{esc(', '.join(unmapped))}")
     if issues:
-        summary += "\n\n⚠️ Validation warnings:\n" + "\n".join(
-            f"• {i['field_name'][:40]}: {i['message']}" for i in issues)
+        summary += "\n\n⚠️ <b>Validation warnings</b>\n" + "\n".join(
+            f"• {esc(i['field_name'][:40])}: {esc(i['message'])}"
+            for i in issues)
     if readback:
-        summary += (f"\n\n🔍 Read-back check: {readback['matched']}/"
-                    f"{readback['checked']} values verified on the page")
+        icon = "🟢" if not readback.get("mismatches") else "🟠"
+        summary += (f"\n\n{icon} <b>Read-back check:</b> "
+                    f"{readback['matched']}/{readback['checked']} "
+                    "values verified on the page")
         for m in readback.get("mismatches", [])[:5]:
-            summary += (f"\n• {m['name'][:35]}: expected "
-                        f"\"{m['expected'][:25]}\", saw \"{m['seen'][:25]}\"")
+            summary += (f"\n• {esc(m['name'][:35])}: expected "
+                        f"<code>{esc(m['expected'][:25])}</code>, saw "
+                        f"<code>{esc(m['seen'][:25])}</code>")
     summary += "\n\nCheck the preview, then choose:"
 
     if previews:
@@ -444,7 +510,8 @@ async def run_mapping(chat_id: int, ctx: ContextTypes.DEFAULT_TYPE,
         buttons.append([InlineKeyboardButton(
             f"💾 Save \"{profile['name']}\" for reuse",
             callback_data="save_client")])
-    await msg.edit_text(summary, reply_markup=InlineKeyboardMarkup(buttons))
+    await progress.finish(summary, parse_mode="HTML",
+                          reply_markup=InlineKeyboardMarkup(buttons))
 
 
 def s_field_page(doc: dict, fid: str) -> int:
